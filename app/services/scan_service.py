@@ -50,10 +50,32 @@ PROGRESS_COMMIT_INTERVAL = 10
 VERIFY_PROGRESS_COMMIT_INTERVAL = 1
 
 _scan_task: asyncio.Task | None = None
-_scan_task_lock = asyncio.Lock()
-_scan_stop_requested = asyncio.Event()
+_scan_task_lock: asyncio.Lock | None = None
+_scan_stop_requested: asyncio.Event | None = None
+_scan_runtime_loop: asyncio.AbstractEventLoop | None = None
 _scan_run_id: int | None = None
 _scan_scope: str | None = None
+
+
+def _normalize_finding_ids(finding_ids: list[int] | list[str] | tuple[object, ...]) -> list[int]:
+    return list(dict.fromkeys(int(fid) for fid in finding_ids if str(fid).isdigit()))
+
+
+def _ensure_scan_runtime_primitives() -> tuple[asyncio.Lock, asyncio.Event]:
+    global _scan_task, _scan_task_lock, _scan_stop_requested, _scan_runtime_loop, _scan_run_id, _scan_scope
+    loop = asyncio.get_running_loop()
+    if _scan_runtime_loop is not loop:
+        _scan_runtime_loop = loop
+        _scan_task = None
+        _scan_task_lock = asyncio.Lock()
+        _scan_stop_requested = asyncio.Event()
+        _scan_run_id = None
+        _scan_scope = None
+    if _scan_task_lock is None:
+        _scan_task_lock = asyncio.Lock()
+    if _scan_stop_requested is None:
+        _scan_stop_requested = asyncio.Event()
+    return _scan_task_lock, _scan_stop_requested
 
 
 def iter_video_files(root: Path):
@@ -747,17 +769,18 @@ async def _perform_scan(
     if commit_progress:
         run = await _commit_scan_progress(session, run_id)
 
+    _, scan_stop_event = _ensure_scan_runtime_primitives()
     skipped_for_resume = 0
     for abs_path, mg, root_path in iter_scan_paths(scannable_roots):
         if skipped_for_resume < resume_skip_count:
             skipped_for_resume += 1
             continue
-        if _scan_stop_requested.is_set():
+        if scan_stop_event.is_set():
             return await interrupt_scan("Library scan interrupted by operator request")
         progress_context["current_library"] = root_path
         await process_one(abs_path, mg)
 
-    if _scan_stop_requested.is_set():
+    if scan_stop_event.is_set():
         return await interrupt_scan("Library scan interrupted by operator request")
 
     final_total_files = total_files if total_files is not None else run.files_seen
@@ -1413,10 +1436,11 @@ async def run_verify_scan(
 async def start_scan(actor: str | None = None, *, resume: bool = False) -> ScanRun | None:
     global _scan_task
     global _scan_run_id, _scan_scope
-    async with _scan_task_lock:
+    scan_task_lock, scan_stop_event = _ensure_scan_runtime_primitives()
+    async with scan_task_lock:
         if _scan_task and not _scan_task.done():
             return None
-        _scan_stop_requested.clear()
+        scan_stop_event.clear()
 
         async with SessionLocal() as session:
             resume_after_file = None
@@ -1480,13 +1504,31 @@ async def start_scan(actor: str | None = None, *, resume: bool = False) -> ScanR
 async def start_verify_scan(finding_ids: list[int], actor: str | None = None) -> ScanRun | None:
     global _scan_task
     global _scan_run_id, _scan_scope
-    finding_ids = list(dict.fromkeys(int(fid) for fid in finding_ids if str(fid).isdigit()))
+    finding_ids = _normalize_finding_ids(finding_ids)
     if not finding_ids:
         return None
-    async with _scan_task_lock:
+    scan_task_lock, scan_stop_event = _ensure_scan_runtime_primitives()
+    async with scan_task_lock:
         if _scan_task and not _scan_task.done():
+            async with SessionLocal() as session:
+                run = ScanRun(
+                    started_at=dt.datetime.now(dt.UTC),
+                    status="queued",
+                    files_seen=0,
+                    suspicious_found=0,
+                    notes=merge_scan_notes(
+                        None,
+                        scope="verify",
+                        phase="queued",
+                        target_count=len(finding_ids),
+                        finding_ids=finding_ids,
+                    ),
+                )
+                session.add(run)
+                await session.commit()
+                return run
             return None
-        _scan_stop_requested.clear()
+        scan_stop_event.clear()
 
         async with SessionLocal() as session:
             run = ScanRun(
@@ -1517,6 +1559,100 @@ async def start_verify_scan(finding_ids: list[int], actor: str | None = None) ->
         async with SessionLocal() as session:
             persisted = await session.get(ScanRun, run_id)
             return persisted
+
+
+async def _start_next_queued_verify_scan_locked(*, actor: str | None = "worker") -> ScanRun | None:
+    global _scan_task, _scan_run_id, _scan_scope
+    _ensure_scan_runtime_primitives()
+    if _scan_task and not _scan_task.done():
+        return None
+
+    async with SessionLocal() as session:
+        active_run = (
+            await session.execute(
+                select(ScanRun)
+                .where(ScanRun.status == "running")
+                .order_by(ScanRun.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if active_run is not None:
+            return None
+
+        queued = (
+            await session.execute(
+                select(ScanRun)
+                .where(ScanRun.status == "queued")
+                .order_by(ScanRun.id.asc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if not queued:
+            return None
+
+        notes = parse_scan_notes(queued.notes)
+        if notes.get("scope") != "verify":
+            return None
+
+        finding_ids = _normalize_finding_ids(notes.get("finding_ids") or [])
+        if not finding_ids:
+            queued.status = "failed"
+            queued.completed_at = dt.datetime.now(dt.UTC)
+            queued.notes = merge_scan_notes(
+                queued.notes,
+                phase="failed",
+                error="Queued verify scan has no valid findings",
+            )
+            await log_event(
+                session,
+                event_type="scan_failed",
+                entity_type="scan_run",
+                entity_id=str(queued.id),
+                message="Queued verify scan has no valid findings",
+                metadata={"scope": "verify"},
+                actor=actor,
+            )
+            await session.commit()
+            return None
+
+        queued.status = "running"
+        queued.started_at = dt.datetime.now(dt.UTC)
+        queued.completed_at = None
+        queued.files_seen = 0
+        queued.suspicious_found = 0
+        queued.notes = merge_scan_notes(
+            queued.notes,
+            scope="verify",
+            phase="running",
+            current_file=None,
+            current_library=None,
+            target_count=len(finding_ids),
+            error=None,
+        )
+        await log_event(
+            session,
+            event_type="scan_started",
+            entity_type="scan_run",
+            message=f"Verify scan started for {len(finding_ids)} finding(s)",
+            entity_id=str(queued.id),
+            metadata={"scope": "verify", "finding_ids": finding_ids[:50]},
+            actor=actor,
+        )
+        await session.commit()
+        run_id = queued.id
+
+    _scan_run_id = run_id
+    _scan_scope = "verify"
+    _scan_task = asyncio.create_task(_background_verify_scan(run_id, finding_ids, actor=actor))
+
+    async with SessionLocal() as session:
+        return await session.get(ScanRun, run_id)
+
+
+async def start_next_queued_verify_scan(*, actor: str | None = "worker") -> ScanRun | None:
+    scan_task_lock, _ = _ensure_scan_runtime_primitives()
+    async with scan_task_lock:
+        return await _start_next_queued_verify_scan_locked(actor=actor)
 
 
 async def _background_scan(
@@ -1613,10 +1749,11 @@ async def _background_verify_scan(run_id: int, finding_ids: list[int], *, actor:
 
 async def stop_background_scan() -> None:
     global _scan_task
-    async with _scan_task_lock:
+    scan_task_lock, scan_stop_event = _ensure_scan_runtime_primitives()
+    async with scan_task_lock:
         task = _scan_task
         _scan_task = None
-        _scan_stop_requested.clear()
+        scan_stop_event.clear()
         global _scan_run_id, _scan_scope
         _scan_run_id = None
         _scan_scope = None
@@ -1630,30 +1767,34 @@ async def stop_background_scan() -> None:
 
 async def request_scan_stop(*, actor: str | None = None) -> int | None:
     del actor
-    async with _scan_task_lock:
+    scan_task_lock, scan_stop_event = _ensure_scan_runtime_primitives()
+    async with scan_task_lock:
         if not _scan_task or _scan_task.done() or _scan_scope != "library" or _scan_run_id is None:
             return None
-        _scan_stop_requested.set()
+        scan_stop_event.set()
         return _scan_run_id
 
 
 def scan_stop_requested() -> bool:
+    _, scan_stop_event = _ensure_scan_runtime_primitives()
     return bool(
         _scan_task
         and not _scan_task.done()
         and _scan_scope == "library"
-        and _scan_stop_requested.is_set()
+        and scan_stop_event.is_set()
     )
 
 
 async def _clear_scan_runtime(run_id: int) -> None:
     global _scan_task, _scan_run_id, _scan_scope
-    async with _scan_task_lock:
+    scan_task_lock, scan_stop_event = _ensure_scan_runtime_primitives()
+    async with scan_task_lock:
         if _scan_run_id == run_id:
             _scan_task = None
             _scan_run_id = None
             _scan_scope = None
-            _scan_stop_requested.clear()
+            scan_stop_event.clear()
+            await _start_next_queued_verify_scan_locked(actor="worker")
 
 
 async def recover_abandoned_scans(*, actor: str | None = "system") -> int:

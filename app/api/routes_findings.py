@@ -650,5 +650,5 @@ async def findings_bulk(
     if skipped_manual:
         redirect_params["manual_only"] = str(skipped_manual)
     if action == "verify" and finding_ids:
-        redirect_params["verify_msg"] = "started" if verify_scan else "already_running"
+        redirect_params["verify_msg"] = "queued" if verify_scan and verify_scan.status == "queued" else "started"
     return RedirectResponse(_append_query_params("/findings", redirect_params), status_code=302)

@@ -31,6 +31,7 @@ from app.rate_limit import limiter
 from app.services.remediation_service import execute_job
 from app.services.integration_service import migrate_legacy_integration_secrets
 from app.services.scan_service import recover_abandoned_scans, stop_background_scan
+from app.services.scan_service import start_next_queued_verify_scan
 from app.services.user_service import ensure_default_admin
 
 setup_logging()
@@ -92,6 +93,7 @@ async def lifespan(app: FastAPI):
     recovered_scans = await recover_abandoned_scans()
     if recovered_scans:
         log.warning("Recovered %s interrupted scan(s) from a previous app session", recovered_scans)
+    await start_next_queued_verify_scan(actor="worker")
     task = asyncio.create_task(_job_worker_loop(stop))
     yield
     stop.set()

@@ -41,6 +41,29 @@ def _outcome_from_finding(finding: Finding) -> MatchOutcome | None:
     )
 
 
+def _payload_has_error(payload: object) -> bool:
+    return isinstance(payload, dict) and "error" in payload
+
+
+def _payload_error_message(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return "Manager request failed"
+    error = str(payload.get("error") or "").strip()
+    if error:
+        return error[:2000]
+    status = payload.get("status")
+    if status not in (None, ""):
+        return f"HTTP {status}"
+    return "Manager request failed"
+
+
+def _exception_message(exc: Exception) -> str:
+    text = str(exc).strip()
+    if text:
+        return text[:2000]
+    return exc.__class__.__name__[:2000]
+
+
 async def _execute_sonarr_delete_search(
     session: AsyncSession,
     client: SonarrClient,
@@ -59,13 +82,10 @@ async def _execute_sonarr_delete_search(
         raise RuntimeError("Sonarr does not have a current episode file to delete")
 
     delete_result = await client.delete_episode_file(int(episode_file_id))
-    if delete_result.get("error"):
-        raise RuntimeError(str(delete_result.get("error"))[:2000])
+    if _payload_has_error(delete_result):
+        return [("DeleteEpisodeFile", delete_result)]
 
     search_result = await client.episode_search([entity_value])
-    if search_result.get("error"):
-        raise RuntimeError(str(search_result.get("error"))[:2000])
-
     return [("DeleteEpisodeFile", delete_result), ("EpisodeSearch", search_result)]
 
 
@@ -85,13 +105,10 @@ async def _execute_radarr_delete_search(
         raise RuntimeError("Radarr does not have a current movie file to delete")
 
     delete_result = await client.delete_movie_file(int(movie_file_id))
-    if delete_result.get("error"):
-        raise RuntimeError(str(delete_result.get("error"))[:2000])
+    if _payload_has_error(delete_result):
+        return [("DeleteMovieFile", delete_result)]
 
     search_result = await client.movies_search([int(mid)])
-    if search_result.get("error"):
-        raise RuntimeError(str(search_result.get("error"))[:2000])
-
     return [("DeleteMovieFile", delete_result), ("MoviesSearch", search_result)]
 
 
@@ -173,9 +190,13 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
                     sid = entity_value
                 cmd = await client.rescan_series(int(sid))
                 await _record_attempt(session, job, "RescanSeries", cmd)
+                if _payload_has_error(cmd):
+                    raise RuntimeError(_payload_error_message(cmd))
             elif action == RemediationAction.DELETE_SEARCH_REPLACEMENT:
                 for step_name, payload in await _execute_sonarr_delete_search(session, client, finding):
                     await _record_attempt(session, job, step_name, payload)
+                    if _payload_has_error(payload):
+                        raise RuntimeError(_payload_error_message(payload))
             else:
                 if entity_kind == "episode":
                     cutoff_unmet = await client.get_cutoff_unmet_episode(entity_value)
@@ -185,9 +206,13 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
                         )
                     cmd = await client.episode_search([entity_value])
                     await _record_attempt(session, job, "EpisodeSearch", cmd)
+                    if _payload_has_error(cmd):
+                        raise RuntimeError(_payload_error_message(cmd))
                 elif entity_kind == "series":
                     cmd = await client.series_search(entity_value)
                     await _record_attempt(session, job, "SeriesSearch", cmd)
+                    if _payload_has_error(cmd):
+                        raise RuntimeError(_payload_error_message(cmd))
                 else:
                     raise RuntimeError("Episode search requires a Sonarr episode link")
         elif finding.manager_kind == ManagerKind.RADARR.value:
@@ -202,12 +227,18 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
             if action == RemediationAction.RESCAN_ONLY:
                 cmd = await client.refresh_movie([int(mid)])
                 await _record_attempt(session, job, "RefreshMovie", cmd)
+                if _payload_has_error(cmd):
+                    raise RuntimeError(_payload_error_message(cmd))
             elif action == RemediationAction.DELETE_SEARCH_REPLACEMENT:
                 for step_name, payload in await _execute_radarr_delete_search(session, client, finding):
                     await _record_attempt(session, job, step_name, payload)
+                    if _payload_has_error(payload):
+                        raise RuntimeError(_payload_error_message(payload))
             else:
                 cmd = await client.movies_search([int(mid)])
                 await _record_attempt(session, job, "MoviesSearch", cmd)
+                if _payload_has_error(cmd):
+                    raise RuntimeError(_payload_error_message(cmd))
         else:
             raise RuntimeError("Finding is not linked to Sonarr or Radarr - manual review only")
 
@@ -273,14 +304,14 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
         )
     except Exception as e:
         job.status = JobStatus.FAILED.value
-        job.last_error = str(e)[:2000]
+        job.last_error = _exception_message(e)
         job.completed_at = dt.datetime.now(dt.UTC)
-        await _record_attempt(session, job, "error", {"error": str(e)})
+        await _record_attempt(session, job, "error", {"error": _exception_message(e)})
         await log_event(
             session,
             event_type="job_failed",
             entity_type="remediation_job",
-            message=str(e)[:500],
+            message=_exception_message(e)[:500],
             entity_id=str(job.id),
             actor=actor,
         )
@@ -288,7 +319,7 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
 
 async def _record_attempt(session: AsyncSession, job: RemediationJob, step: str, payload: object) -> None:
     summary = payload if isinstance(payload, str) else json.dumps(payload, default=str)[:8000]
-    failed = isinstance(payload, dict) and bool(payload.get("error"))
+    failed = isinstance(payload, dict) and "error" in payload
     att = RemediationAttempt(
         job_id=job.id,
         step_name=step,

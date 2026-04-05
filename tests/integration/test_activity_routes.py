@@ -275,7 +275,12 @@ def test_activity_page_does_not_apply_job_command_labels_to_non_job_events():
     asyncio.run(_cleanup())
 
 
-def test_activity_page_uses_job_status_for_queue_count_and_sorts_events_by_time():
+def test_activity_page_uses_job_status_for_queue_count_and_sorts_events_by_time(monkeypatch):
+    async def fake_job_worker_loop(stop):
+        await stop.wait()
+
+    monkeypatch.setattr("app.main._job_worker_loop", fake_job_worker_loop)
+
     async def _seed():
         await init_db()
         async with SessionLocal() as session:

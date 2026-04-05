@@ -5,10 +5,12 @@ from app.integrations.sonarr_client import SonarrClient
 
 
 class _StubResponse:
-    def __init__(self, payload: dict):
-        self.status_code = 200
-        self.text = ""
+    def __init__(self, payload: dict, *, status_code: int = 200, text: str = "", reason_phrase: str = "OK"):
+        self.status_code = status_code
+        self.text = text
+        self.reason_phrase = reason_phrase
         self._payload = payload
+        self.content = b"{}"
 
     def json(self):
         return self._payload
@@ -102,3 +104,24 @@ async def test_sonarr_episodes_for_series_shapes_request(monkeypatch):
     assert url == "http://sonarr:8989/api/v3/episode"
     assert headers["X-Api-Key"] == "secret"
     assert params == {"seriesId": 55}
+
+
+class _ErrorAsyncClient(_StubAsyncClient):
+    async def post(self, url, headers=None, json=None):
+        self.calls.append(("POST", url, headers, json))
+        return _StubResponse({}, status_code=409, reason_phrase="Conflict")
+
+
+@pytest.mark.asyncio
+async def test_radarr_post_command_returns_status_when_error_body_is_empty(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.integrations.radarr_client.httpx.AsyncClient",
+        lambda *args, **kwargs: _ErrorAsyncClient(calls, *args, **kwargs),
+    )
+    client = RadarrClient("http://radarr:7878", "secret")
+
+    payload = await client.movies_search([55])
+
+    assert payload["status"] == 409
+    assert payload["error"] == "HTTP 409: Conflict"

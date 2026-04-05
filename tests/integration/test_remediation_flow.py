@@ -759,3 +759,107 @@ async def test_remediation_marks_job_failed_when_relink_raises(monkeypatch, tmp_
         assert "relink timed out" in (job.last_error or "").lower()
         assert job.attempt_count == 1
         assert attempts
+
+
+@pytest.mark.asyncio
+async def test_radarr_search_replacement_marks_empty_error_payload_as_failed(monkeypatch, tmp_path: Path):
+    media_file = tmp_path / "Broken.Movie.2022.mkv"
+    media_file.write_bytes(b"x" * 300_000)
+
+    class _StubRadarrClient:
+        def __init__(self, base_url: str, api_key: str):
+            self.base_url = base_url
+            self.api_key = api_key
+
+        async def movies_search(self, movie_ids: list[int]):
+            assert movie_ids == [42]
+            return {"error": "", "status": 409}
+
+    async def fake_get_integration(session, kind):
+        return SimpleNamespace(enabled=True, base_url="http://radarr:7878", api_key="secret")
+
+    async def fake_relink_finding(session, finding):
+        return SimpleNamespace(
+            manager_kind=ManagerKind.RADARR,
+            manager_entity_id="42",
+            title="Broken Movie",
+            season_number=None,
+            episode_number=None,
+            year=2022,
+            match_confidence="high",
+        )
+
+    async def fake_probe_file(path: str):
+        return ProbeResult(True, 7200.0, 1920, 1080, "h264", ["aac"], {"streams": [], "format": {}}, None)
+
+    monkeypatch.setattr("app.services.remediation_service.RadarrClient", _StubRadarrClient)
+    monkeypatch.setattr("app.services.remediation_service.get_integration", fake_get_integration)
+    monkeypatch.setattr("app.services.remediation_service.relink_finding", fake_relink_finding)
+    monkeypatch.setattr("app.services.remediation_service.probe_file", fake_probe_file)
+
+    await init_db()
+    async with SessionLocal() as session:
+        async with session.begin():
+            for model in (RemediationAttempt, RemediationJob, FindingReason, Finding):
+                await session.execute(model.__table__.delete())
+            finding = Finding(
+                file_path=str(media_file),
+                file_name=media_file.name,
+                media_kind="movie",
+                manager_kind="radarr",
+                manager_entity_id="42",
+                title="Broken Movie",
+                year=2022,
+                file_size_bytes=media_file.stat().st_size,
+                duration_seconds=20.0,
+                resolution="1920x1080",
+                codec_video="h264",
+                codec_audio="aac",
+                suspicion_score=90,
+                confidence="high",
+                proposed_action="search_replacement",
+                status="open",
+                ignored=False,
+            )
+            session.add(finding)
+            await session.flush()
+            session.add(
+                RemediationJob(
+                    finding_id=finding.id,
+                    action_type="search_replacement",
+                    status="queued",
+                    attempt_count=0,
+                    requested_by="test-radarr-empty-error",
+                )
+            )
+
+    async with SessionLocal() as session:
+        async with session.begin():
+            job = (
+                await session.execute(
+                    select(RemediationJob)
+                    .where(RemediationJob.requested_by == "test-radarr-empty-error")
+                    .order_by(RemediationJob.id.desc())
+                )
+            ).scalar_one()
+            await execute_job(session, job.id, actor="test")
+
+    async with SessionLocal() as session:
+        job = (
+            await session.execute(
+                select(RemediationJob)
+                .where(RemediationJob.requested_by == "test-radarr-empty-error")
+                .order_by(RemediationJob.id.desc())
+            )
+        ).scalar_one()
+        attempts = (
+            await session.execute(
+                select(RemediationAttempt)
+                .where(RemediationAttempt.job_id == job.id)
+                .order_by(RemediationAttempt.id.asc())
+            )
+        ).scalars().all()
+        assert job.status == JobStatus.FAILED.value
+        assert job.last_error == "HTTP 409"
+        assert [attempt.step_name for attempt in attempts] == ["MoviesSearch", "error"]
+        assert [attempt.status for attempt in attempts] == ["failed", "failed"]
