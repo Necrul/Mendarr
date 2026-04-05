@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Activity - Mendarr{% endblock %}
+{% block heading %}Activity{% endblock %}
+{% block subtitle %}<p class="page-subtitle">Review scans, repairs, and configuration changes without digging through container logs.</p>{% endblock %}
+{% block actions %}
+<div class="action-row">
+  <a href="/jobs" class="btn ghost">Open jobs</a>
+  <a href="/findings" class="btn">Open findings</a>
+</div>
+{% endblock %}
+{% block content %}
+<div class="stats-grid">
+  {% for card in summary_cards %}
+  <div class="stat-card {% if card.tone %}{{ card.tone }}{% endif %}">
+    <div class="stat-label">{{ card.label }}</div>
+    <div class="stat-value">{{ card.value }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if current_scan %}
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Running now</p>
+      <h2>Current scan</h2>
+    </div>
+  </div>
+  <div class="live-scan-card" data-live-scan-card>
+    <div class="live-scan-head">
+      <strong data-live-scan-label>Scan #{{ current_scan.id }} is running</strong>
+      <span class="muted" data-live-scan-counts>{{ current_scan.files_seen }} files checked</span>
+    </div>
+    <div class="live-scan-rail" aria-hidden="true"><span class="live-scan-fill" data-live-scan-fill></span></div>
+    <p class="micro-copy" data-live-scan-meta>Activity will update while Mendarr works through the libraries.</p>
+  </div>
+</section>
+{% endif %}
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Recent scans</p>
+        <h2>Latest runs</h2>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>ID</th><th>Status</th><th>Files</th><th>Findings</th><th>Completed</th></tr></thead>
+        <tbody>
+          {% for scan in latest_scans %}
+          <tr>
+            <td>{{ scan.id }}</td>
+            <td><span class="badge status-{{ scan.status }}">{{ scan.status | status_label }}</span></td>
+            <td>{{ scan.files_seen }}</td>
+            <td>{{ scan.suspicious_found }}</td>
+            <td class="muted">{{ scan.completed_at or "-" }}</td>
+          </tr>
+          {% if scan.notes | scan_notes(scan.status) %}
+          <tr class="attempt-row">
+            <td colspan="5">
+              <div class="notes-grid inline-notes">
+                {% for label, value in scan.notes | scan_notes(scan.status) %}
+                <div class="note-chip">
+                  <span>{{ label }}</span>
+                  <strong>{{ value }}</strong>
+                </div>
+                {% endfor %}
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+          {% else %}
+          <tr><td colspan="5" class="empty-cell">No scans recorded yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Failure reasons</p>
+        <h2>What is blocking repairs</h2>
+      </div>
+    </div>
+    <ul class="activity-feed">
+      {% for item in failure_groups %}
+      <li class="activity-item">
+        <div>
+          <strong class="activity-title">{{ item.label }}</strong>
+          <p class="table-subtle">{{ item.count }} event(s){% if item.sample and item.label != item.sample %} | {{ item.sample }}{% endif %}</p>
+        </div>
+        <span class="activity-time">{{ item.last_seen }}</span>
+      </li>
+      {% else %}
+      <li class="empty-state inline-empty"><p>No current repair blockers.</p></li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Recent actions</p>
+      <h2>What changed lately</h2>
+    </div>
+  </div>
+  <ul class="activity-feed">
+    {% for e in recent_changes %}
+    <li class="activity-item">
+      <div>
+        <strong class="activity-title">{{ e.display_type | event_label }}</strong>
+        <p class="table-subtle">{{ e.message }}</p>
+      </div>
+      <span class="activity-time">{{ e.created_at }}</span>
+    </li>
+    {% else %}
+    <li class="empty-state inline-empty"><p>No changes recorded yet.</p></li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Timeline</p>
+      <h2>Recent events</h2>
+    </div>
+    <form method="get" class="inline-select-form">
+      <label>Show
+        <select name="page_size" class="page-size-select" data-submit-on-change>
+          {% for option in page_size_options %}
+          <option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <input type="hidden" name="page" value="1" />
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Time</th><th>Type</th><th>Entity</th><th>Message</th><th>Actor</th></tr></thead>
+      <tbody>
+        {% for e in events %}
+        <tr>
+          <td class="muted">{{ e.created_at }}</td>
+          <td><span class="badge">{{ e.display_type | event_label }}</span></td>
+          <td>{{ e.entity_type }} {{ e.entity_id or '' }}</td>
+          <td>{{ e.message }}</td>
+          <td class="muted">{{ e.actor or "-" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="empty-cell">No audit events have been recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-row">
+    <p class="pagination-meta">
+      {% if pagination.total_items %}
+      Showing {{ pagination.start_index }}-{{ pagination.end_index }} of {{ pagination.total_items }} events
+      {% else %}
+      No events yet
+      {% endif %}
+    </p>
+    <nav class="pagination" aria-label="Activity pagination">
+      {% if pagination.prev_url %}
+      <a class="btn ghost btn-sm" href="{{ pagination.prev_url }}">Previous</a>
+      {% endif %}
+      {% for item in pagination.pages %}
+      <a class="page-pill {% if item.current %}active{% endif %}" href="{{ item.url }}">{{ item.number }}</a>
+      {% endfor %}
+      {% if pagination.next_url %}
+      <a class="btn ghost btn-sm" href="{{ pagination.next_url }}">Next</a>
+      {% endif %}
+    </nav>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Finding #{{ finding.id }} - Mendarr{% endblock %}
+{% block heading %}Review finding{% endblock %}
+{% block subtitle %}<p class="page-subtitle">Inspect the score, see why Mendarr flagged the file, and decide whether to ignore it, rescan it, or trigger a replacement search.</p>{% endblock %}
+{% block actions %}
+<div class="action-row">
+  <a href="/findings" class="btn ghost">Back</a>
+  <a href="/jobs" class="btn">Jobs</a>
+</div>
+{% endblock %}
+{% block content %}
+<div class="flash-stack">
+  {% if request.query_params.get('status_msg') == 'ignored' %}
+  <p class="flash ok">Finding ignored.</p>
+  {% elif request.query_params.get('status_msg') == 'reviewed' %}
+  <p class="flash ok">Finding marked reviewed.</p>
+  {% elif request.query_params.get('status_msg') == 'unignored' %}
+  <p class="flash ok">Finding unignored.</p>
+  {% endif %}
+  {% if request.query_params.get('job_msg') == 'queued' %}
+  <p class="flash ok">Repair job queued.</p>
+  {% elif request.query_params.get('job_msg') == 'manual_only' %}
+  <p class="flash error">Mendarr could not queue a repair for this finding because no matching Sonarr or Radarr connection is available for its media type.</p>
+  {% elif request.query_params.get('job_msg') == 'delete_replace_unavailable' %}
+  <p class="flash error">Delete-and-replace needs a direct Sonarr episode link or Radarr movie link for this finding.</p>
+  {% endif %}
+  {% if request.query_params.get('verify_msg') == 'started' %}
+  <p class="flash ok">Verify scan started for this finding.</p>
+  {% elif request.query_params.get('verify_msg') == 'already_running' %}
+  <p class="flash error">Another scan is already running.</p>
+  {% elif request.query_params.get('verify_msg') == 'missing' %}
+  <p class="flash error">This finding could not be sent to verify.</p>
+  {% endif %}
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Score</div>
+    <div class="stat-value">{{ finding.suspicion_score }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Confidence</div>
+    <div class="stat-value">{{ finding.confidence }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Action</div>
+    <div class="stat-value">{{ finding.proposed_action | action_label }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Status</div>
+    <div class="stat-value">{{ derived_state | status_label }}</div>
+  </div>
+</div>
+
+<div class="detail-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">File</p>
+        <h2>{{ finding | finding_primary_name }}</h2>
+      </div>
+      <span class="badge">{{ finding.media_kind }}</span>
+    </div>
+    <dl class="kv">
+      <dt>Path</dt><dd class="path-wrap">{{ finding.file_path }}</dd>
+      <dt>File name</dt><dd>{{ finding.file_name }}</dd>
+      <dt>Size</dt><dd>{{ finding.file_size_bytes | filesize }}</dd>
+      <dt>Duration</dt><dd>{{ finding.duration_seconds or "-" }}</dd>
+      <dt>Resolution</dt><dd>{{ finding.resolution or "-" }}</dd>
+      <dt>Video codec</dt><dd>{{ finding.codec_video or "-" }}</dd>
+      <dt>Audio codec</dt><dd>{{ finding.codec_audio or "-" }}</dd>
+      <dt>Last seen</dt><dd>{{ finding.last_seen_at }}</dd>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Match</p>
+        <h2>Manager</h2>
+      </div>
+    </div>
+    <dl class="kv">
+      <dt>Manager</dt><dd>{{ finding.manager_kind or "unmanaged" }}</dd>
+      <dt>Entity id</dt><dd>{{ finding.manager_entity_id or "-" }}</dd>
+      <dt>Title</dt><dd>{{ finding.title or "-" }}</dd>
+      <dt>Season / episode</dt><dd>{{ finding.season_number or "-" }} / {{ finding.episode_number or "-" }}</dd>
+      <dt>Year</dt><dd>{{ finding.year or "-" }}</dd>
+      <dt>Media type</dt><dd>{{ finding.media_kind }}</dd>
+    </dl>
+    {% if manager_links.manager_open_url or manager_links.cutoff_url %}
+    <div class="action-row">
+      {% if manager_links.manager_open_url %}
+      <a href="{{ manager_links.manager_open_url }}" target="_blank" rel="noopener noreferrer" class="btn ghost">Open in {{ manager_links.manager_label }}</a>
+      {% elif manager_links.manager_home_url %}
+      <a href="{{ manager_links.manager_home_url }}" target="_blank" rel="noopener noreferrer" class="btn ghost">Open {{ manager_links.manager_label }}</a>
+      {% endif %}
+      {% if manager_links.cutoff_url %}
+      <a href="{{ manager_links.cutoff_url }}" target="_blank" rel="noopener noreferrer" class="btn">Open cutoff view</a>
+      {% endif %}
+    </div>
+    {% if manager_links.interactive_hint %}
+    <p class="micro-copy">{{ manager_links.interactive_hint }}</p>
+    {% endif %}
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Reasons</p>
+        <h2>Why it was flagged</h2>
+      </div>
+    </div>
+    <div class="reason-grid">
+      {% for r in finding.reasons %}
+      <div class="reason-chip">
+        <strong>{{ r.code | reason_label }}</strong>
+        <p>{{ r.message }}</p>
+      </div>
+      {% else %}
+      <p class="muted">No reasons recorded.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Actions</p>
+      <h2>Queue response</h2>
+    </div>
+  </div>
+  <div class="action-row">
+    <form method="post" action="/findings/{{ finding.id }}/review">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" class="btn ghost">Mark reviewed</button>
+    </form>
+    <form method="post" action="/findings/{{ finding.id }}/remediate">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="mode" value="rescan_only" />
+      <button type="submit" class="btn primary" {% if not can_remediate %}disabled{% endif %}>Rescan</button>
+    </form>
+    <form method="post" action="/findings/{{ finding.id }}/remediate">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="mode" value="search" />
+      <button type="submit" class="btn warn" {% if not can_remediate %}disabled{% endif %}>Search replacement</button>
+    </form>
+    <form method="post" action="/findings/{{ finding.id }}/remediate" data-confirm="Delete and replace asks the manager to delete the current file, then search for a replacement. Replacement is not guaranteed. Continue?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="mode" value="delete_search" />
+      <button type="submit" class="btn warn" {% if not can_delete_replace %}disabled{% endif %}>Delete and replace</button>
+    </form>
+    <form method="post" action="/scan/verify">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="finding_ids" value="{{ finding.id }}" />
+      <input type="hidden" name="return_to" value="/findings/{{ finding.id }}" />
+      <button type="submit" class="btn">Run verify scan</button>
+    </form>
+    {% if not finding.ignored %}
+    <form method="post" action="/findings/{{ finding.id }}/ignore">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" class="btn ghost">Ignore</button>
+    </form>
+    {% else %}
+    <form method="post" action="/findings/{{ finding.id }}/unignore">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" class="btn">Unignore</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if queue_mode == "sonarr-relink" %}
+  <p class="micro-copy">Repair can be queued. Mendarr will try to match this TV file in Sonarr first, then trigger the search.</p>
+  {% elif queue_mode == "radarr-relink" %}
+  <p class="micro-copy">Repair can be queued. Mendarr will try to match this movie in Radarr first, then trigger the search.</p>
+  {% elif derived_state == "pending_verify" %}
+  <p class="micro-copy">The manager accepted the request. Run a verify scan to confirm a better file was actually imported.</p>
+  {% elif not can_remediate %}
+  <p class="micro-copy">Manual review only. No matching Sonarr or Radarr connection is available for this file type yet.</p>
+  {% endif %}
+  {% if finding.manager_kind == "sonarr" and finding.manager_entity_id %}
+  <p class="micro-copy">Search replacement asks Sonarr for an upgrade. Sonarr may still keep the current file if quality or custom format cutoff is already met.</p>
+  {% endif %}
+  <p class="micro-copy">Delete and replace asks Sonarr or Radarr to remove the current file before searching again. Mendarr should still be mounted read-only; the manager handles the deletion and replacement workflow.</p>
+  {% if jobs and jobs[0] | job_result_label == "Cutoff already met" %}
+  <p class="micro-copy">This item is not cutoff-unmet in Sonarr right now. Use the Sonarr links above to inspect cutoff status or run Interactive Search manually.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Jobs</p>
+      <h2>Related history</h2>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>ID</th><th>Action</th><th>Status</th><th>Attempts</th><th>Outcome</th></tr></thead>
+      <tbody>
+        {% for j in jobs %}
+        <tr>
+          <td>{{ j.id }}</td>
+          <td><span class="badge">{{ j.action_type }}</span></td>
+          <td><span class="badge status-{{ j.status }}">{{ j.status | status_label }}</span></td>
+          <td>{{ j.attempt_count }}</td>
+          <td class="muted">{{ j | job_result_label }}{% if j | job_result_message %}<div class="table-subtle">{{ j | job_result_message }}</div>{% endif %}</td>
+        </tr>
+        {% if j.attempts %}
+        <tr class="attempt-row">
+          <td colspan="5">
+            {% for attempt in j.attempts %}
+            <div class="attempt">
+              <strong>{{ attempt.step_name | attempt_label }}</strong>
+              <span class="table-subtle">/ {{ attempt.status | status_label }}</span>
+              {% set summary = attempt | attempt_summary %}
+              {% if summary %}
+              <div class="table-subtle">{{ summary }}</div>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endif %}
+        {% else %}
+        <tr><td colspan="5" class="empty-cell">No remediation jobs yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

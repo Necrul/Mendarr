@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Mendarr{% endblock %} {{ request.app.state.version_label }}</title>
+  <link rel="icon" type="image/png" href="/static/img/mendarr-logo.png" />
+  <link rel="stylesheet" href="/static/css/theme.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="nav-rail">
+      <a href="/" class="brand brand-link">
+        <span class="brand-mark">
+          <img src="/static/img/mendarr-logo.png" alt="Mendarr" class="brand-logo" />
+        </span>
+        <div class="brand-copy">
+          <span class="brand-text">Mendarr</span>
+          <p class="brand-subtitle">Scan libraries. Flag bad files. Trigger repair searches.</p>
+        </div>
+      </a>
+      <nav class="nav">
+        <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
+        <a href="/integrations" class="{% if request.url.path.startswith('/integrations') %}active{% endif %}">Setup</a>
+        <a href="/findings" class="{% if request.url.path.startswith('/findings') %}active{% endif %}">Findings</a>
+        <a href="/jobs" class="{% if request.url.path.startswith('/jobs') %}active{% endif %}">Jobs</a>
+        <a href="/rules" class="{% if request.url.path.startswith('/rules') %}active{% endif %}">Rules</a>
+        <a href="/activity" class="{% if request.url.path.startswith('/activity') %}active{% endif %}">Activity</a>
+      </nav>
+      <div class="nav-footer">
+        <button type="button" class="theme-toggle" id="themeToggle">Switch to dark</button>
+        <a
+          href="https://buymeacoffee.com/necrul"
+          class="support-link"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Support Mendarr
+        </a>
+        <div class="nav-version">{{ request.app.state.version_label }}</div>
+        <form method="post" action="/logout" class="logout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+          <button type="submit" class="link-btn">Logout</button>
+        </form>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="top-bar">
+        <div class="page-header">
+          <p class="page-overline">{% block section %}Workspace{% endblock %}</p>
+          <h1 class="page-title">{% block heading %}Overview{% endblock %}</h1>
+          {% block subtitle %}{% endblock %}
+        </div>
+        <div class="top-actions">{% block actions %}{% endblock %}</div>
+      </header>
+      <section class="scan-pulse hidden" id="scanPulse" aria-live="polite">
+        <div class="scan-pulse-copy">
+          <p class="section-kicker">Live scan</p>
+          <h2 id="scanPulseTitle">Scanning libraries</h2>
+          <p class="scan-pulse-meta" id="scanPulseMeta">Working through the current library.</p>
+        </div>
+        <div class="scan-pulse-progress">
+          <div class="scan-pulse-rail" aria-hidden="true">
+            <span class="scan-pulse-fill" id="scanPulseFill"></span>
+          </div>
+          <div class="scan-pulse-stats">
+            <strong id="scanPulseCounts">0 / 0 files</strong>
+            <span id="scanPulseFindings">0 findings</span>
+          </div>
+        </div>
+        <div class="scan-pulse-actions">
+          <form method="post" action="/scan/stop" class="hidden" data-scan-stop-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="btn danger btn-sm" data-scan-stop-button>Stop library scan</button>
+          </form>
+          <a href="/activity" class="btn ghost btn-sm">Open activity</a>
+          <a href="/findings" class="btn ghost btn-sm">Open findings</a>
+        </div>
+      </section>
+      <main class="content page-enter">{% block content %}{% endblock %}</main>
+    </div>
+  </div>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

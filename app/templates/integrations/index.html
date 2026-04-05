@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Setup - Mendarr{% endblock %}
+{% block heading %}Setup{% endblock %}
+{% block subtitle %}<p class="page-subtitle">Add scan libraries first. Connect Sonarr or Radarr only if you want Mendarr to trigger replacement searches.</p>{% endblock %}
+{% block content %}
+<div class="flash-stack">
+  {% if request.query_params.get('sonarr_test') == '1' %}
+  <p class="flash ok">Sonarr connected.</p>
+  {% elif request.query_params.get('sonarr_test') == '0' %}
+  <p class="flash error">Sonarr connection failed.</p>
+  {% elif request.query_params.get('sonarr_msg') == 'not_configured' %}
+  <p class="flash error">Add Sonarr first.</p>
+  {% elif request.query_params.get('sonarr_msg') == 'url_invalid' %}
+  <p class="flash error">Enter a valid Sonarr URL, including `http://` or `https://`.</p>
+  {% elif request.query_params.get('sonarr_msg') == 'saved' %}
+  <p class="flash ok">Sonarr saved.</p>
+  {% endif %}
+
+  {% if request.query_params.get('radarr_test') == '1' %}
+  <p class="flash ok">Radarr connected.</p>
+  {% elif request.query_params.get('radarr_test') == '0' %}
+  <p class="flash error">Radarr connection failed.</p>
+  {% elif request.query_params.get('radarr_msg') == 'not_configured' %}
+  <p class="flash error">Add Radarr first.</p>
+  {% elif request.query_params.get('radarr_msg') == 'url_invalid' %}
+  <p class="flash error">Enter a valid Radarr URL, including `http://` or `https://`.</p>
+  {% elif request.query_params.get('radarr_msg') == 'saved' %}
+  <p class="flash ok">Radarr saved.</p>
+  {% endif %}
+
+  {% if request.query_params.get('root_msg') == 'path_missing' %}
+  <p class="flash error">That folder is not available to Mendarr.</p>
+  {% elif request.query_params.get('root_msg') == 'added' %}
+  <p class="flash ok">Library added.</p>
+  {% elif request.query_params.get('root_msg') == 'removed' %}
+  <p class="flash ok">Library removed from Mendarr.</p>
+  {% elif request.query_params.get('root_msg') == 'missing' %}
+  <p class="flash error">That library could not be found.</p>
+  {% elif request.query_params.get('root_msg') == 'path_required' %}
+  <p class="flash error">Add a scan path first.</p>
+  {% elif request.query_params.get('root_msg') == 'path_invalid' %}
+  <p class="flash error">That folder path could not be used.</p>
+  {% elif request.query_params.get('root_msg') == 'exists' %}
+  <p class="flash error">That library is already in Mendarr.</p>
+  {% endif %}
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Libraries</div>
+    <div class="stat-value">{{ roots|length }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Sonarr</div>
+    <div class="stat-value">{% if sonarr and sonarr.base_url %}Connected{% else %}Optional{% endif %}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Radarr</div>
+    <div class="stat-value">{% if radarr and radarr.base_url %}Connected{% else %}Optional{% endif %}</div>
+  </div>
+</div>
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Add library</p>
+        <h2>Custom scan library</h2>
+      </div>
+    </div>
+    <form method="post" action="/integrations/roots/add" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="manager_root_path" value="" />
+      <label>Type
+        <select name="manager_kind" required>
+          <option value="tv">TV</option>
+          <option value="movie">Movie</option>
+          <option value="mixed">Mixed</option>
+        </select>
+      </label>
+      <label>Scan path
+        <input name="local_root_path" required placeholder="/path/to/your/library" value="{{ custom_scan_path }}" />
+      </label>
+      <div class="action-row">
+        <button type="submit" class="btn primary">Add library</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Libraries</p>
+        <h2>Current libraries</h2>
+      </div>
+    </div>
+    <div class="library-grid">
+      {% for lr in roots %}
+      <article class="library-card">
+        <div class="library-card-header">
+          <div>
+            <h3>{{ lr.local_root_path | basename }}</h3>
+            <p class="library-path">{{ lr.local_root_path }}</p>
+          </div>
+          <span class="badge">{{ lr.manager_kind }}</span>
+        </div>
+        <p class="library-meta">
+          {% if lr.manager_root_path %}
+          Linked to {{ lr.manager_root_path }}
+          {% else %}
+          Custom scan library
+          {% endif %}
+        </p>
+        <div class="library-actions">
+          <form method="post" action="/integrations/roots/{{ lr.id }}/delete" style="display:inline" data-confirm="Remove this library from Mendarr only?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+            <button type="submit" class="btn danger">Remove from Mendarr</button>
+          </form>
+        </div>
+      </article>
+      {% else %}
+      <div class="empty-state">
+        <p>No libraries added yet.</p>
+        <span>Add a path on the left or import one from Sonarr or Radarr below.</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Apps</p>
+        <h2>Sonarr</h2>
+      </div>
+      <form method="post" action="/integrations/test/sonarr" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <button type="submit" class="btn ghost">Test</button>
+      </form>
+    </div>
+    <form method="post" action="/integrations/sonarr" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <label>URL <input name="base_url" value="{{ sonarr.base_url if sonarr else '' }}" placeholder="http://sonarr.local:8989" /></label>
+      <label>API key <input name="api_key" type="password" placeholder="{{ sonarr_key_masked if sonarr else 'Paste Sonarr API key' }}" autocomplete="off" /></label>
+      <label class="checkbox"><input type="checkbox" name="enabled" value="on" {% if not sonarr or sonarr.enabled %}checked{% endif %} /> Enabled</label>
+      <button type="submit" class="btn primary">Save Sonarr</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Apps</p>
+        <h2>Radarr</h2>
+      </div>
+      <form method="post" action="/integrations/test/radarr" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <button type="submit" class="btn ghost">Test</button>
+      </form>
+    </div>
+    <form method="post" action="/integrations/radarr" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <label>URL <input name="base_url" value="{{ radarr.base_url if radarr else '' }}" placeholder="http://radarr.local:7878" /></label>
+      <label>API key <input name="api_key" type="password" placeholder="{{ radarr_key_masked if radarr else 'Paste Radarr API key' }}" autocomplete="off" /></label>
+      <label class="checkbox"><input type="checkbox" name="enabled" value="on" {% if not radarr or radarr.enabled %}checked{% endif %} /> Enabled</label>
+      <button type="submit" class="btn primary">Save Radarr</button>
+    </form>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Import</p>
+      <h2>Load from Sonarr or Radarr</h2>
+    </div>
+  </div>
+  <div class="import-actions">
+    <a href="/integrations?discover=sonarr" class="import-action-card">
+      <strong>Load Sonarr</strong>
+    </a>
+    <a href="/integrations?discover=radarr" class="import-action-card">
+      <strong>Load Radarr</strong>
+    </a>
+    <a href="/integrations?discover=all" class="import-action-card">
+      <strong>Load both</strong>
+    </a>
+  </div>
+  {% if discover_messages %}
+  <div class="flash-stack">
+    {% for message in discover_messages %}
+    <p class="flash error">{{ message }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if sonarr_candidates or radarr_candidates %}
+  <div class="library-grid">
+    {% for candidate in sonarr_candidates + radarr_candidates %}
+    <form method="post" action="/integrations/roots/add" class="library-card">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="manager_kind" value="{{ candidate.manager_kind }}" />
+      <div class="library-card-header">
+        <div>
+          <h3>{{ candidate.manager_root_path | basename }}</h3>
+          <p class="library-path">{{ candidate.manager_root_path }}</p>
+        </div>
+        <span class="badge">{{ candidate.manager_kind }}</span>
+      </div>
+      <label>App path
+        <input name="manager_root_path" value="{{ candidate.manager_root_path }}" required />
+      </label>
+      <label>Scan path
+        <input name="local_root_path" value="{{ candidate.local_root_path }}" placeholder="/path/to/that/library/on-this-host" required />
+      </label>
+      {% if not candidate.exists_locally %}
+      <p class="table-subtle">Mendarr cannot see this path yet. Change the scan path before adding it.</p>
+      {% endif %}
+      <button type="submit" class="btn {% if candidate.already_mapped %}ghost{% else %}primary{% endif %}" {% if candidate.already_mapped %}disabled{% endif %}>
+        {% if candidate.already_mapped %}Added{% else %}Add{% endif %}
+      </button>
+    </form>
+    {% endfor %}
+  </div>
+  {% elif discover %}
+  <div class="empty-state">
+    <p>Nothing loaded from the selected app.</p>
+    <span>Use the message above to see what blocked the import.</span>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

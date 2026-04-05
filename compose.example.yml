@@ -1,0 +1,23 @@
+services:
+  mendarr:
+    image: ${MENDARR_IMAGE:-ghcr.io/necrul/mendarr:latest}
+    ports:
+      - "8095:8095"
+    env_file:
+      - .env
+    environment:
+      MENDARR_SECRET_KEY: ${MENDARR_SECRET_KEY}
+      MENDARR_ENCRYPTION_KEY: ${MENDARR_ENCRYPTION_KEY}
+      MENDARR_ADMIN_USERNAME: ${MENDARR_ADMIN_USERNAME:-admin}
+      MENDARR_ADMIN_PASSWORD: ${MENDARR_ADMIN_PASSWORD}
+      MENDARR_FFPROBE_PATH: ${MENDARR_FFPROBE_PATH:-ffprobe}
+      MENDARR_LOG_LEVEL: ${MENDARR_LOG_LEVEL:-INFO}
+      MENDARR_TRUST_PROXY_HEADERS: ${MENDARR_TRUST_PROXY_HEADERS:-false}
+      MENDARR_PUBLIC_REPO: ${MENDARR_PUBLIC_REPO:-Necrul/Mendarr}
+    volumes:
+      - mendarr-data:/data
+      # Mount media read-only when possible; align paths with library_root mappings.
+      - /path/to/your/media:/media:ro
+
+volumes:
+  mendarr-data:

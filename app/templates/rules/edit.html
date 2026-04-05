@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Rules - Mendarr{% endblock %}
+{% block heading %}Rules{% endblock %}
+{% block subtitle %}<p class="page-subtitle">Tune what Mendarr flags and add exceptions for folders or titles you never want treated as bad media.</p>{% endblock %}
+{% block content %}
+<div class="flash-stack">
+  {% if request.query_params.get('rules_msg') == 'saved' %}
+  <p class="flash ok">Rule settings saved.</p>
+  {% endif %}
+  {% if request.query_params.get('exception_msg') == 'added' %}
+  <p class="flash ok">Exception added.</p>
+  {% endif %}
+</div>
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Thresholds</p>
+        <h2>Scoring</h2>
+      </div>
+    </div>
+    <form method="post" action="/rules/save" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <div class="form-grid">
+        <label>Min TV size (bytes)
+          <input type="number" name="min_tv_size_bytes" value="{{ rules.min_tv_size_bytes }}" required />
+        </label>
+        <label>Min movie size (bytes)
+          <input type="number" name="min_movie_size_bytes" value="{{ rules.min_movie_size_bytes }}" required />
+        </label>
+        <label>Min TV duration (seconds)
+          <input type="number" step="0.1" name="min_duration_tv_seconds" value="{{ rules.min_duration_tv_seconds }}" required />
+        </label>
+        <label>Min movie duration (seconds)
+          <input type="number" step="0.1" name="min_duration_movie_seconds" value="{{ rules.min_duration_movie_seconds }}" required />
+        </label>
+      </div>
+      <label>Excluded keywords
+        <textarea name="excluded_keywords" rows="2">{{ rules.excluded_keywords }}</textarea>
+      </label>
+      <label>Extras keywords override
+        <textarea name="extras_keywords" rows="2">{{ rules.extras_keywords }}</textarea>
+      </label>
+      <label>Excluded paths
+        <textarea name="excluded_paths" rows="3">{{ rules.excluded_paths }}</textarea>
+      </label>
+      <label>Ignored glob patterns
+        <textarea name="ignored_patterns" rows="3">{{ rules.ignored_patterns }}</textarea>
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="auto_remediation_enabled" value="on" {% if rules.auto_remediation_enabled %}checked{% endif %} />
+        Auto-remediate high confidence results
+      </label>
+      <button type="submit" class="btn primary">Save rules</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Exceptions</p>
+        <h2>Add override</h2>
+      </div>
+    </div>
+    <form method="post" action="/rules/exceptions/add" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <label>Path contains or glob <input name="path_pattern" placeholder="**/Behind the Scenes/**" /></label>
+      <label>Title pattern <input name="title_pattern" placeholder="Optional title fragment" /></label>
+      <label>Note <input name="note" placeholder="Optional note" /></label>
+      <label class="checkbox"><input type="checkbox" name="ignore_flag" value="on" checked /> Ignore matches</label>
+      <button type="submit" class="btn">Add exception</button>
+    </form>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Exceptions</p>
+      <h2>Saved overrides</h2>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>ID</th><th>Path</th><th>Title</th><th>Ignore</th><th>Note</th></tr></thead>
+      <tbody>
+        {% for e in exceptions %}
+        <tr>
+          <td>{{ e.id }}</td>
+          <td>{{ e.path_pattern or "-" }}</td>
+          <td>{{ e.title_pattern or "-" }}</td>
+          <td>{{ e.ignore_flag }}</td>
+          <td>{{ e.note or "-" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="empty-cell">No exceptions added yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

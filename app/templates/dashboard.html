@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Mendarr{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block subtitle %}<p class="page-subtitle">See scan health, open findings, and what Mendarr changed most recently.</p>{% endblock %}
+{% block actions %}
+<div class="action-row">
+  <a href="/integrations" class="btn ghost">Manage libraries</a>
+  <form method="post" action="/scan/start" style="display:inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit" class="btn primary">Run scan</button>
+  </form>
+  <form method="post" action="/scan/start" style="display:inline" {% if not resume_scan %}class="hidden"{% endif %} data-scan-resume-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <input type="hidden" name="resume" value="1" />
+    <button type="submit" class="btn">Resume scan</button>
+  </form>
+  <form method="post" action="/scan/stop" style="display:inline" {% if not latest_scan or latest_scan.status != 'running' or latest_scan_scope == 'verify' %}class="hidden"{% endif %} data-scan-stop-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+    <button type="submit" class="btn danger" data-scan-stop-button>Stop library scan</button>
+  </form>
+</div>
+{% endblock %}
+{% block content %}
+<div class="flash-stack">
+  {% if request.query_params.get('scan') == 'started' %}
+  <p class="flash ok">Scan started. Activity will update as Mendarr works through the libraries.</p>
+  {% elif request.query_params.get('scan') == 'stop_requested' %}
+  <p class="flash ok">Stop requested. Mendarr will finish the current file, then interrupt the library scan.</p>
+  {% elif request.query_params.get('scan') == 'resumed' %}
+  <p class="flash ok">Scan resumed from the last interrupted checkpoint.</p>
+  {% elif request.query_params.get('scan') == 'resume_missing' %}
+  <p class="flash error">No interrupted library scan is available to resume.</p>
+  {% elif request.query_params.get('scan') == 'not_running' %}
+  <p class="flash error">No library scan is running right now.</p>
+  {% elif request.query_params.get('scan') == 'already_running' %}
+  <p class="flash error">A scan is already running.</p>
+  {% elif request.query_params.get('scan') == 'done' %}
+  <p class="flash ok">Scan finished. {{ request.query_params.get('files_seen', '0') }} files checked, {{ request.query_params.get('suspicious_found', '0') }} findings created.</p>
+  {% endif %}
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Libraries</div>
+    <div class="stat-value">{{ root_count }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Findings</div>
+    <div class="stat-value">{{ total_findings }}</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="stat-label">Open</div>
+    <div class="stat-value">{{ unresolved }}</div>
+  </div>
+  <div class="stat-card danger">
+    <div class="stat-label">High confidence</div>
+    <div class="stat-value">{{ high_conf }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Sonarr</div>
+    <div class="stat-value">{% if sonarr_ready %}Ready{% else %}Off{% endif %}</div>
+    <div class="stat-meta">Replacement search support</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Radarr</div>
+    <div class="stat-value">{% if radarr_ready %}Ready{% else %}Off{% endif %}</div>
+    <div class="stat-meta">Replacement search support</div>
+  </div>
+</div>
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Scan center</p>
+        <h2>Latest run</h2>
+      </div>
+      <a href="/activity" class="btn ghost">Open activity</a>
+    </div>
+    {% if latest_scan %}
+    <div class="stats-grid compact-stats">
+      <div class="stat-card">
+        <div class="stat-label">Files</div>
+        <div class="stat-value" data-live-scan-files>{{ latest_scan.files_seen }}</div>
+      </div>
+      <div class="stat-card {% if latest_scan.suspicious_found %}warn{% endif %}">
+        <div class="stat-label">Findings</div>
+        <div class="stat-value" data-live-scan-findings>{{ latest_scan.suspicious_found }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Status</div>
+        <div class="stat-value" data-live-scan-status>{{ latest_scan.status | status_label }}</div>
+      </div>
+    </div>
+    {% if latest_scan.status == 'running' %}
+    <div class="live-scan-card" data-live-scan-card>
+      <div class="live-scan-head">
+        <strong data-live-scan-label>Scan is running</strong>
+        <span class="muted" data-live-scan-counts>{{ latest_scan.files_seen }} files checked</span>
+      </div>
+      <div class="live-scan-rail" aria-hidden="true"><span class="live-scan-fill" data-live-scan-fill></span></div>
+      <p class="micro-copy" data-live-scan-meta>Mendarr will update this view while it works.</p>
+    </div>
+    {% elif latest_scan.status == 'failed' %}
+    <p class="flash error">The last scan failed. Check Activity for details.</p>
+    {% endif %}
+    {% if latest_scan.files_seen == 0 and root_count and latest_scan_scope != 'verify' %}
+    <p class="flash error">The last scan saw zero media files. Recheck the library paths Mendarr can see.</p>
+    {% endif %}
+    {% if latest_scan.notes | scan_notes(latest_scan.status) %}
+    <div class="notes-grid">
+      {% for label, value in latest_scan.notes | scan_notes(latest_scan.status) %}
+      <div class="note-chip">
+        <span>{{ label }}</span>
+        <strong>{{ value }}</strong>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">
+      <p>No scans yet.</p>
+      <span>Add a library, then run the first scan.</span>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Connections</p>
+        <h2>Repair search apps</h2>
+      </div>
+      <a href="/integrations" class="btn ghost">Setup</a>
+    </div>
+    <div class="status-grid">
+      <article class="status-card {% if sonarr_ready %}ready{% endif %}">
+        <div>
+          <p class="section-kicker">Sonarr</p>
+          <h3>{% if sonarr_ready %}Connected{% else %}Optional{% endif %}</h3>
+        </div>
+        <span class="badge {% if sonarr_ready %}status-succeeded{% endif %}">{% if sonarr_ready %}Ready{% else %}Off{% endif %}</span>
+      </article>
+      <article class="status-card {% if radarr_ready %}ready{% endif %}">
+        <div>
+          <p class="section-kicker">Radarr</p>
+          <h3>{% if radarr_ready %}Connected{% else %}Optional{% endif %}</h3>
+        </div>
+        <span class="badge {% if radarr_ready %}status-succeeded{% endif %}">{% if radarr_ready %}Ready{% else %}Off{% endif %}</span>
+      </article>
+    </div>
+  </section>
+</div>
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Release</p>
+        <h2>Version and updates</h2>
+      </div>
+      {% if update_status.repo_url %}
+      <a href="{{ update_status.repo_url }}" class="btn ghost" target="_blank" rel="noopener noreferrer">Public repo</a>
+      {% endif %}
+    </div>
+    <div class="status-grid">
+      <article class="status-card ready">
+        <div>
+          <p class="section-kicker">Running</p>
+          <h3>{{ update_status.current_version }}</h3>
+        </div>
+        <span class="badge status-succeeded">v1.0</span>
+      </article>
+      <article class="status-card {% if update_status.update_available %}ready{% endif %}">
+        <div>
+          <p class="section-kicker">Update check</p>
+          <h3>
+            {% if update_status.update_available %}
+            {{ update_status.latest_version }}
+            {% elif update_status.status == 'current' %}
+            Up to date
+            {% else %}
+            Unavailable
+            {% endif %}
+          </h3>
+          <p class="library-meta">{{ update_status.message }}</p>
+        </div>
+        {% if update_status.release_url %}
+        <a href="{{ update_status.release_url }}" class="btn ghost" target="_blank" rel="noopener noreferrer">Release link</a>
+        {% endif %}
+      </article>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Libraries</p>
+        <h2>Configured scan libraries</h2>
+      </div>
+      <a href="/integrations" class="btn ghost">Manage</a>
+    </div>
+    <div class="library-grid">
+      {% for lr in roots %}
+      <article class="library-card">
+        <div class="library-card-header">
+          <div>
+            <h3>{{ lr.local_root_path | basename }}</h3>
+            <p class="library-path">{{ lr.local_root_path }}</p>
+          </div>
+          <span class="badge">{{ lr.manager_kind }}</span>
+        </div>
+        <p class="library-meta">
+          {% if lr.manager_root_path %}
+          Linked to {{ lr.manager_root_path }}
+          {% else %}
+          Custom scan library
+          {% endif %}
+        </p>
+      </article>
+      {% else %}
+      <div class="empty-state">
+        <p>No libraries added yet.</p>
+        <span>Open Setup to add the folders Mendarr should scan.</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Needs attention</p>
+        <h2>Open findings</h2>
+      </div>
+      <a href="/findings" class="btn ghost">Open findings</a>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Title</th><th>Type</th><th>Score</th><th>Recommended</th><th>Review</th></tr></thead>
+        <tbody>
+          {% for finding in open_findings %}
+          <tr>
+            <td>
+              <a href="/findings/{{ finding.id }}">{{ finding | finding_primary_name }}</a>
+              {% if finding | finding_secondary_name %}
+              <div class="table-subtle">{{ finding | finding_secondary_name }}</div>
+              {% endif %}
+              <div class="table-subtle">{{ finding.file_path }}</div>
+            </td>
+            <td><span class="badge">{{ finding.media_kind }}</span></td>
+            <td>{{ finding.suspicion_score }}</td>
+            <td><span class="recommendation-chip">{{ finding.proposed_action | action_label }}</span></td>
+            <td><a href="/findings/{{ finding.id }}">Review</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="empty-cell">No open findings right now.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Recent jobs</p>
+        <h2>Repair queue</h2>
+      </div>
+      <a href="/jobs" class="btn ghost">Open jobs</a>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>ID</th><th>Action</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody>
+          {% for j in recent_jobs %}
+          <tr>
+            <td>{{ j.id }}</td>
+            <td><span class="badge">{{ j.action_type | action_label }}</span></td>
+            <td><span class="badge status-{{ j.status }}">{{ j.status | status_label }}</span></td>
+            <td class="muted">{{ j.created_at }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="empty-cell">No jobs yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="section-kicker">Recent events</p>
+        <h2>Latest activity</h2>
+      </div>
+      <a href="/activity" class="btn ghost">Open activity</a>
+    </div>
+    <ul class="activity-feed">
+      {% for e in recent_events %}
+      <li class="activity-item">
+        <div>
+          <strong class="activity-title">{{ e.event_type | event_label }}</strong>
+          <p class="table-subtle">{{ e.message }}</p>
+        </div>
+        <span class="activity-time">{{ e.created_at }}</span>
+      </li>
+      {% else %}
+      <li class="empty-state inline-empty">
+        <p>Nothing recorded yet.</p>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endblock %}

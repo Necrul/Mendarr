@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login - Mendarr {{ request.app.state.version_label }}</title>
+  <link rel="stylesheet" href="/static/css/theme.css" />
+</head>
+<body class="login-body">
+  <div class="login-screen">
+    <div class="login-hero">
+      <img src="/static/img/mendarr-logo.png" alt="Mendarr" class="login-logo" />
+      <div>
+        <p class="eyebrow">Mendarr {{ request.app.state.version_label }}</p>
+        <h1>Keep your library clean without guessing.</h1>
+        <p class="hero-text">Mendarr scans the folders you choose, flags suspicious media, and can ask Sonarr or Radarr to search for better replacements.</p>
+      </div>
+    </div>
+    <div class="login-card">
+      <h2>Sign in</h2>
+      <p class="muted">Use the Mendarr account for this server.</p>
+      {% if error %}
+      <p class="flash error">{{ error }}</p>
+      {% endif %}
+      <form method="post" action="/login">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="hidden" name="next_url" value="{{ next_url }}" />
+        <label>Username
+          <input name="username" autocomplete="username" required />
+        </label>
+        <label>Password
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="btn primary">Sign in</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

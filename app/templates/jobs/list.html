@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Jobs - Mendarr{% endblock %}
+{% block heading %}Jobs{% endblock %}
+{% block subtitle %}<p class="page-subtitle">Track queued repair searches, retries, and failures tied to Mendarr findings.</p>{% endblock %}
+{% block actions %}
+<div class="action-row">
+  <a href="/findings" class="btn ghost">Findings</a>
+  <a href="/activity" class="btn">Activity</a>
+</div>
+{% endblock %}
+{% block content %}
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Queued</div>
+    <div class="stat-value">{{ status_counts.queued }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Running</div>
+    <div class="stat-value">{{ status_counts.running }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Accepted</div>
+    <div class="stat-value">{{ status_counts.succeeded }}</div>
+  </div>
+  <div class="stat-card danger">
+    <div class="stat-label">Failed</div>
+    <div class="stat-value">{{ status_counts.failed }}</div>
+  </div>
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div>
+      <p class="section-kicker">Queue</p>
+      <h2>Remediation history</h2>
+    </div>
+    <form method="get" class="inline-select-form">
+      <label>Show
+        <select name="page_size" class="page-size-select" data-submit-on-change>
+          {% for option in page_size_options %}
+          <option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <input type="hidden" name="page" value="1" />
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Finding</th>
+          <th>File</th>
+          <th>Action</th>
+          <th>Status</th>
+          <th>Outcome</th>
+          <th>Attempts</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for j in jobs %}
+        <tr>
+          <td>{{ j.id }}</td>
+          <td><a href="/findings/{{ j.finding_id }}">#{{ j.finding_id }}</a></td>
+          <td class="path-cell" title="{% if j.finding %}{{ j.finding.file_path }}{% endif %}">
+            {% if j.finding %}{{ j.finding.file_name }}{% else %}-{% endif %}
+          </td>
+          <td><span class="badge">{{ j.action_type | action_label }}</span></td>
+          <td><span class="badge status-{{ j.status }}">{{ j.status | status_label }}</span></td>
+          <td class="muted">{{ j | job_result_label }}{% if j | job_result_message %}<div class="table-subtle">{{ j | job_result_message }}</div>{% endif %}</td>
+          <td>{{ j.attempt_count }}</td>
+          <td class="muted">{{ j.created_at }}</td>
+        </tr>
+        {% if j.attempts %}
+        <tr class="attempt-row">
+          <td colspan="8">
+            {% for a in j.attempts %}
+            <div class="attempt">
+              <strong>{{ a.step_name | attempt_label }}</strong>
+              <span class="table-subtle">/ {{ a.status | status_label }}</span>
+              {% set summary = a | attempt_summary %}
+              {% if summary %}
+              <div class="table-subtle">{{ summary }}</div>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endif %}
+        {% else %}
+        <tr><td colspan="8" class="empty-cell">No remediation jobs yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-row">
+    <p class="pagination-meta">
+      {% if pagination.total_items %}
+      Showing {{ pagination.start_index }}-{{ pagination.end_index }} of {{ pagination.total_items }} jobs
+      {% else %}
+      No jobs yet
+      {% endif %}
+    </p>
+    <nav class="pagination" aria-label="Jobs pagination">
+      {% if pagination.prev_url %}
+      <a class="btn ghost btn-sm" href="{{ pagination.prev_url }}">Previous</a>
+      {% endif %}
+      {% for item in pagination.pages %}
+      <a class="page-pill {% if item.current %}active{% endif %}" href="{{ item.url }}">{{ item.number }}</a>
+      {% endfor %}
+      {% if pagination.next_url %}
+      <a class="btn ghost btn-sm" href="{{ pagination.next_url }}">Next</a>
+      {% endif %}
+    </nav>
+  </div>
+</section>
+{% endblock %}
