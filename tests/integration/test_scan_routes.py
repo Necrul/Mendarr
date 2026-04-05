@@ -155,6 +155,32 @@ def test_scan_stop_accepts_json_without_redirect(monkeypatch):
         assert response.json() == {"stopped": True, "scan": {"id": 77}}
 
 
+def test_verify_scan_redirects_as_queued_when_another_scan_is_running(monkeypatch):
+    async def fake_start_background_verify_scan(finding_ids, actor=None):
+        assert finding_ids == [11, 12]
+        return SimpleNamespace(id=88, status="queued")
+
+    monkeypatch.setattr("app.api.routes_scan.start_background_verify_scan", fake_start_background_verify_scan)
+
+    with TestClient(app) as client:
+        _login(client)
+        findings = client.get("/findings")
+        csrf = extract_csrf_token(findings.text)
+
+        response = client.post(
+            "/scan/verify",
+            data={
+                "csrf_token": csrf,
+                "finding_ids": ["11", "12"],
+                "return_to": "/findings",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302
+        assert response.headers["location"] == "/findings?verify_msg=queued&scan_id=88"
+
+
 def test_latest_scan_status_endpoint_returns_progress(monkeypatch):
     async def fake_recover_abandoned_scans(actor="system"):
         return 0
@@ -185,3 +211,51 @@ def test_latest_scan_status_endpoint_returns_progress(monkeypatch):
         assert payload["status"] == "running"
         assert payload["progress_percent"] == 30
         assert payload["notes"]["current_file"].endswith("Episode 01.mkv")
+
+
+def test_latest_scan_status_prefers_running_scan_over_newer_queued_scan(monkeypatch):
+    async def fake_recover_abandoned_scans(actor="system"):
+        return 0
+
+    monkeypatch.setattr("app.main.recover_abandoned_scans", fake_recover_abandoned_scans)
+
+    async def _seed():
+        async with SessionLocal() as session:
+            await session.execute(ScanRun.__table__.delete())
+            session.add_all(
+                [
+                    ScanRun(
+                        started_at=dt.datetime.now(dt.UTC) - dt.timedelta(seconds=20),
+                        status="running",
+                        files_seen=3,
+                        suspicious_found=1,
+                        notes='{"scope":"library","total_files":10}',
+                    ),
+                    ScanRun(
+                        started_at=dt.datetime.now(dt.UTC),
+                        status="queued",
+                        files_seen=0,
+                        suspicious_found=0,
+                        notes='{"scope":"verify","target_count":5,"finding_ids":[1,2,3,4,5]}',
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_seed())
+
+    with TestClient(app) as client:
+        _login(client)
+        response = client.get("/api/scans/latest")
+
+        assert response.status_code == 200
+        payload = response.json()["scan"]
+        assert payload["status"] == "running"
+        assert payload["scope"] == "library"
+
+    async def _cleanup():
+        async with SessionLocal() as session:
+            await session.execute(ScanRun.__table__.delete())
+            await session.commit()
+
+    asyncio.run(_cleanup())

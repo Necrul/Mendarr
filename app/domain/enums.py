@@ -50,6 +50,7 @@ class JobStatus(str, Enum):
 
 
 class ScanRunStatus(str, Enum):
+    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"

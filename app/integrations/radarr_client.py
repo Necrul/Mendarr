@@ -21,6 +21,53 @@ class RadarrClient:
     def _timeout(self) -> httpx.Timeout:
         return httpx.Timeout(self.timeout, connect=min(3.0, self.timeout))
 
+    def _error_payload(self, response: httpx.Response) -> dict[str, Any]:
+        payload: Any = None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        message = ""
+        if isinstance(payload, dict):
+            candidates = [
+                payload.get("message"),
+                payload.get("errorMessage"),
+                payload.get("error"),
+                payload.get("description"),
+                payload.get("title"),
+            ]
+            errors = payload.get("errors")
+            if isinstance(errors, list):
+                for item in errors:
+                    if isinstance(item, dict):
+                        candidates.extend(
+                            [
+                                item.get("message"),
+                                item.get("errorMessage"),
+                                item.get("error"),
+                                item.get("description"),
+                            ]
+                        )
+                    elif item:
+                        candidates.append(str(item))
+            elif isinstance(errors, dict):
+                for key, value in errors.items():
+                    if value:
+                        candidates.append(f"{key}: {value}")
+            message = next(
+                (str(value).strip() for value in candidates if value is not None and str(value).strip()),
+                "",
+            )
+        if not message:
+            message = str(response.text or "").strip()
+        if not message:
+            reason = (getattr(response, "reason_phrase", "") or "").strip() or "Request failed"
+            message = f"HTTP {response.status_code}: {reason}"
+        elif not message.lower().startswith("http "):
+            message = f"HTTP {response.status_code}: {message}"
+        return {"error": message[:2000], "status": response.status_code}
+
     async def test(self) -> tuple[bool, str]:
         try:
             async with httpx.AsyncClient(timeout=self._timeout()) as c:
@@ -69,7 +116,7 @@ class RadarrClient:
         async with httpx.AsyncClient(timeout=self._timeout()) as c:
             r = await c.delete(f"{self.base_url}/api/v3/moviefile/{movie_file_id}", headers=self._headers())
             if r.status_code >= 400:
-                return {"error": r.text, "status": r.status_code}
+                return self._error_payload(r)
             if r.content:
                 try:
                     return r.json()
@@ -81,8 +128,13 @@ class RadarrClient:
         async with httpx.AsyncClient(timeout=self._timeout()) as c:
             r = await c.post(f"{self.base_url}/api/v3/command", headers=self._headers(), json=body)
             if r.status_code >= 400:
-                return {"error": r.text, "status": r.status_code}
-            return r.json()
+                return self._error_payload(r)
+            if not r.content:
+                return {"status": r.status_code, "body": body}
+            try:
+                return r.json()
+            except ValueError:
+                return {"status": r.status_code, "body": body}
 
     async def refresh_movie(self, movie_ids: list[int]) -> dict[str, Any]:
         return await self.post_command({"name": "RefreshMovie", "movieIds": movie_ids})

@@ -53,6 +53,33 @@ def parse_sonarr_entity_id(raw: str | None) -> tuple[str | None, int | None]:
     return "episode", int(text) if text.isdigit() else None
 
 
+def _manager_parse_candidates(path: Path, pairs: list[tuple[str, str]] | None = None) -> list[str]:
+    candidates: list[str] = []
+    if pairs:
+        mapped = local_to_manager_relative(str(path), pairs)
+        if mapped:
+            manager_root, relative_path = mapped
+            manager_root_clean = manager_root.replace("\\", "/").rstrip("/")
+            relative_clean = relative_path.replace("\\", "/").lstrip("/")
+            if manager_root_clean and relative_clean:
+                candidates.append(f"{manager_root_clean}/{relative_clean}")
+            if relative_clean:
+                candidates.append(relative_clean)
+    if path.parent.name:
+        candidates.append(f"{path.parent.name}/{path.name}")
+    candidates.append(path.name)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in candidates:
+        cleaned = str(value).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique.append(cleaned)
+    return unique
+
+
 async def load_root_pairs(session: AsyncSession) -> dict[str, list[tuple[str, str]]]:
     r = await session.execute(select(LibraryRoot).where(LibraryRoot.enabled.is_(True)))
     roots = list(r.scalars().all())
@@ -89,13 +116,15 @@ async def match_tv_path(
         sid = series.get("id")
         if sid is not None:
             try:
-                parsed = await client.parse_path(path.name)
-                ep = (parsed.get("episodes") or [None])[0]
-                if ep and ep.get("id"):
-                    episode_id = sonarr_episode_entity_id(ep["id"])
-                    season = ep.get("seasonNumber", season)
-                    episode = ep.get("episodeNumber", episode)
-                elif season is not None and episode is not None:
+                for candidate in _manager_parse_candidates(path, pairs):
+                    parsed = await client.parse_path(candidate)
+                    ep = (parsed.get("episodes") or [None])[0]
+                    if ep and ep.get("id"):
+                        episode_id = sonarr_episode_entity_id(ep["id"])
+                        season = ep.get("seasonNumber", season)
+                        episode = ep.get("episodeNumber", episode)
+                        break
+                if episode_id is None and season is not None and episode is not None:
                     episodes = await client.episodes_for_series(int(sid))
                     matched = next(
                         (
@@ -151,18 +180,19 @@ async def match_movie_path(
             conf,
         )
     try:
-        parsed = await client.parse_path(path.name)
-        m = parsed.get("movie") or {}
-        if m.get("id"):
-            return MatchOutcome(
-                ManagerKind.RADARR,
-                str(m["id"]),
-                m.get("title"),
-                None,
-                None,
-                m.get("year"),
-                "medium",
-            )
+        for candidate in _manager_parse_candidates(path, pairs):
+            parsed = await client.parse_path(candidate)
+            m = parsed.get("movie") or {}
+            if m.get("id"):
+                return MatchOutcome(
+                    ManagerKind.RADARR,
+                    str(m["id"]),
+                    m.get("title"),
+                    None,
+                    None,
+                    m.get("year"),
+                    "medium",
+                )
     except Exception:
         pass
     return MatchOutcome(

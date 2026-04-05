@@ -1591,3 +1591,120 @@ async def test_start_verify_scan_persists_current_target_while_running(monkeypat
         await asyncio.sleep(0.1)
     else:
         raise AssertionError("verify scan did not complete in time")
+
+
+@pytest.mark.asyncio
+async def test_start_verify_scan_queues_and_runs_after_active_verify_scan(monkeypatch, tmp_path: Path):
+    first_target = tmp_path / "movie" / "First.Movie.2022.mkv"
+    second_target = tmp_path / "movie" / "Second.Movie.2022.mkv"
+    first_target.parent.mkdir(parents=True)
+    first_target.write_bytes(b"x" * 300_000)
+    second_target.write_bytes(b"x" * 300_000)
+
+    first_probe_started = asyncio.Event()
+    release_first_probe = asyncio.Event()
+    second_probe_started = asyncio.Event()
+
+    async def fake_probe_file(path: str):
+        if path == str(first_target):
+            first_probe_started.set()
+            await release_first_probe.wait()
+        elif path == str(second_target):
+            second_probe_started.set()
+        else:
+            raise AssertionError(f"unexpected verify path {path}")
+        return ProbeResult(
+            True,
+            1800.0,
+            1920,
+            1080,
+            "h264",
+            ["aac"],
+            {"streams": [{"codec_type": "video"}], "format": {"duration": "1800.0"}},
+            None,
+        )
+
+    async def fake_get_integration(session, kind):
+        return None
+
+    monkeypatch.setattr("app.services.scan_service.probe_file", fake_probe_file)
+    monkeypatch.setattr("app.services.scan_service.get_integration", fake_get_integration)
+
+    await init_db()
+    async with SessionLocal() as session:
+        async with session.begin():
+            await session.execute(delete(RemediationAttempt))
+            await session.execute(delete(RemediationJob))
+            await session.execute(delete(FindingReason))
+            await session.execute(delete(Finding))
+            await session.execute(delete(ScanRun))
+            first = Finding(
+                file_path=str(first_target),
+                file_name=first_target.name,
+                media_kind="movie",
+                manager_kind="radarr",
+                manager_entity_id="101",
+                title="First Movie",
+                year=2022,
+                file_size_bytes=first_target.stat().st_size,
+                duration_seconds=20.0,
+                resolution="1920x1080",
+                codec_video="h264",
+                codec_audio="aac",
+                suspicion_score=90,
+                confidence="high",
+                proposed_action="search_replacement",
+                status="open",
+                ignored=False,
+            )
+            second = Finding(
+                file_path=str(second_target),
+                file_name=second_target.name,
+                media_kind="movie",
+                manager_kind="radarr",
+                manager_entity_id="102",
+                title="Second Movie",
+                year=2022,
+                file_size_bytes=second_target.stat().st_size,
+                duration_seconds=20.0,
+                resolution="1920x1080",
+                codec_video="h264",
+                codec_audio="aac",
+                suspicion_score=90,
+                confidence="high",
+                proposed_action="search_replacement",
+                status="open",
+                ignored=False,
+            )
+            session.add_all([first, second])
+            await session.flush()
+            first_id = first.id
+            second_id = second.id
+
+    first_run = await start_verify_scan([first_id], actor="test")
+    assert first_run is not None
+    assert first_run.status == "running"
+
+    await asyncio.wait_for(first_probe_started.wait(), timeout=5)
+
+    queued_run = await start_verify_scan([second_id], actor="test")
+    assert queued_run is not None
+    assert queued_run.status == "queued"
+
+    async with SessionLocal() as session:
+        persisted_queued = await session.get(ScanRun, queued_run.id)
+        assert persisted_queued is not None
+        assert persisted_queued.status == "queued"
+
+    release_first_probe.set()
+
+    await asyncio.wait_for(second_probe_started.wait(), timeout=5)
+
+    for _ in range(50):
+        async with SessionLocal() as session:
+            refreshed = await session.get(ScanRun, queued_run.id)
+            if refreshed and refreshed.status == "completed":
+                break
+        await asyncio.sleep(0.1)
+    else:
+        raise AssertionError("queued verify scan did not complete in time")

@@ -97,13 +97,19 @@ async def start_verify_scan_route(
 ):
     require_csrf(request, csrf_token)
     target = return_to if return_to.startswith("/") else "/findings"
-    scan = await start_background_verify_scan(finding_ids, actor=user)
     if not finding_ids:
         return RedirectResponse(_append_query_params(target, {"verify_msg": "missing"}), status_code=302)
+    scan = await start_background_verify_scan(finding_ids, actor=user)
     if not scan:
-        return RedirectResponse(_append_query_params(target, {"verify_msg": "already_running"}), status_code=302)
+        return RedirectResponse(_append_query_params(target, {"verify_msg": "missing"}), status_code=302)
     return RedirectResponse(
-        _append_query_params(target, {"verify_msg": "started", "scan_id": str(scan.id)}),
+        _append_query_params(
+            target,
+            {
+                "verify_msg": "queued" if scan.status == "queued" else "started",
+                "scan_id": str(scan.id),
+            },
+        ),
         status_code=302,
     )
 
@@ -114,10 +120,22 @@ async def latest_scan_status(
     session: AsyncSession = Depends(get_db),
 ):
     latest = (
-        (await session.execute(select(ScanRun).order_by(ScanRun.id.desc()).limit(1)))
+        (await session.execute(select(ScanRun).where(ScanRun.status == "running").order_by(ScanRun.id.desc()).limit(1)))
         .scalars()
         .first()
     )
+    if not latest:
+        latest = (
+            (await session.execute(select(ScanRun).where(ScanRun.status == "queued").order_by(ScanRun.id.desc()).limit(1)))
+            .scalars()
+            .first()
+        )
+    if not latest:
+        latest = (
+            (await session.execute(select(ScanRun).order_by(ScanRun.id.desc()).limit(1)))
+            .scalars()
+            .first()
+        )
     if not latest:
         return JSONResponse({"scan": None})
 

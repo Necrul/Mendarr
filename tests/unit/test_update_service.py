@@ -6,12 +6,12 @@ def test_update_status_marks_current_release(monkeypatch):
         update_service,
         "_fetch_latest_release",
         lambda repo: _async_result(
-            {
-                "latest_version": "v1.0.0",
-                "release_url": f"https://github.com/{repo}/releases/tag/v1.0.0",
-                "error": None,
-            }
-        ),
+                {
+                    "latest_version": "v1.0.1",
+                    "release_url": f"https://github.com/{repo}/releases/tag/v1.0.1",
+                    "error": None,
+                }
+            ),
     )
     cache_path = update_service._update_cache_path()
     if cache_path.exists():
@@ -19,7 +19,7 @@ def test_update_status_marks_current_release(monkeypatch):
 
     status = _run(update_service.get_update_status())
 
-    assert status["current_version"] == "v1.0.0"
+    assert status["current_version"] == "v1.0.1"
     assert status["update_available"] is False
     assert status["status"] == "current"
 

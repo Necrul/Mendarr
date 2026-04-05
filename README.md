@@ -1,4 +1,4 @@
-# Mendarr v1.0.0
+# Mendarr v1.0.1
 
 <p align="center">
   <img src="app/static/img/mendarr-logo.png" alt="Mendarr logo" width="180">
@@ -320,4 +320,4 @@ MIT. See [LICENSE](LICENSE).
 
 - GitHub Actions publishes `ghcr.io/necrul/mendarr`
 - `main` updates `latest`
-- version tags such as `v1.0.0` publish matching image tags
+- version tags such as `v1.0.1` publish matching image tags

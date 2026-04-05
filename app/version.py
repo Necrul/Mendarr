@@ -4,7 +4,7 @@ from app.config import get_settings
 
 
 def get_app_version() -> str:
-    return get_settings().app_version.strip() or "1.0.0"
+    return get_settings().app_version.strip() or "1.0.1"
 
 
 def get_version_label() -> str:

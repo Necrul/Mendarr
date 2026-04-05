@@ -26,8 +26,8 @@
   {% endif %}
   {% if request.query_params.get('verify_msg') == 'started' %}
   <p class="flash ok">Verify scan started for this finding.</p>
-  {% elif request.query_params.get('verify_msg') == 'already_running' %}
-  <p class="flash error">Another scan is already running.</p>
+  {% elif request.query_params.get('verify_msg') == 'queued' %}
+  <p class="flash ok">Verify scan queued for this finding. Mendarr will start it after the current scan finishes.</p>
   {% elif request.query_params.get('verify_msg') == 'missing' %}
   <p class="flash error">This finding could not be sent to verify.</p>
   {% endif %}
