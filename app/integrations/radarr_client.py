@@ -4,16 +4,17 @@ from typing import Any
 
 import httpx
 
+from app.config import get_settings
 from app.logging import get_logger
 
 log = get_logger(__name__)
 
 
 class RadarrClient:
-    def __init__(self, base_url: str, api_key: str, timeout: float = 10.0):
+    def __init__(self, base_url: str, api_key: str, timeout: float | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else get_settings().integration_timeout_seconds
 
     def _headers(self) -> dict[str, str]:
         return {"X-Api-Key": self.api_key}

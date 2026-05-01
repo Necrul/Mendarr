@@ -263,6 +263,12 @@ def humanize_failure_reason(message: str | None) -> str:
         return "Database is busy"
     if "cutoff already met" in lowered or "will not force an upgrade" in lowered:
         return "Cutoff already met in Sonarr"
+    if "manager request timed out" in lowered or lowered == "readtimeout":
+        return "Manager request timed out"
+    if "connection to the manager timed out" in lowered or lowered == "connecttimeout":
+        return "Connection to the manager timed out"
+    if "could not connect to the manager" in lowered or "connecterror" in lowered:
+        return "Could not connect to the manager"
     return text
 
 

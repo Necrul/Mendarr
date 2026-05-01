@@ -36,6 +36,7 @@ Use either plaintext password bootstrap or hash plus salt bootstrap. If no admin
 |----------|-------------|---------|
 | `MENDARR_FFPROBE_PATH` | `ffprobe` binary path | `ffprobe` |
 | `MENDARR_MEDIAINFO_PATH` | Optional `mediainfo` path | empty |
+| `MENDARR_INTEGRATION_TIMEOUT_SECONDS` | HTTP timeout for Sonarr and Radarr requests | `30` |
 | `MENDARR_SCAN_CONCURRENCY` | Reserved concurrency knob for future scan parallelism | `4` |
 | `MENDARR_SCAN_PRECOUNT_ENABLED` | Count every media file before scanning to show exact progress totals; disable to avoid the extra filesystem walk | `false` |
 | `MENDARR_MIN_TV_SIZE_BYTES` | Initial TV size threshold before rule settings exist | `50000` |
@@ -51,7 +52,7 @@ Use either plaintext password bootstrap or hash plus salt bootstrap. If no admin
 | `MENDARR_CORS_ORIGINS` | Reserved for deployments that need explicit CORS | empty |
 | `MENDARR_RATE_LIMIT_REMEDIATION` | Informational operator setting for remediation rate limits | `20/minute` |
 | `MENDARR_TRUST_PROXY_HEADERS` | Trust `X-Forwarded-*` headers from a known reverse proxy | `false` |
-| `MENDARR_APP_VERSION` | App version label shown in the UI | `1.0.1` |
+| `MENDARR_APP_VERSION` | App version label shown in the UI | `1.0.2` |
 | `MENDARR_PUBLIC_REPO` | Public GitHub repo slug or URL used for update checks | `necrul/Mendarr` |
 | `MENDARR_UPDATE_CHECK_ENABLED` | Enable release checks against the public repo | `true` |
 | `MENDARR_UPDATE_CHECK_INTERVAL_HOURS` | Cache lifetime for repo update checks | `12` |

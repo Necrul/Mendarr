@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     ffprobe_path: str = Field(default="ffprobe")
     mediainfo_path: str = Field(default="")
+    integration_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
     scan_concurrency: int = Field(default=4, ge=1, le=32)
     scan_precount_enabled: bool = Field(
         default=False,
@@ -69,7 +70,7 @@ class Settings(BaseSettings):
         default=False,
         description="Trust X-Forwarded-* headers from a known reverse proxy",
     )
-    app_version: str = Field(default="1.0.1", description="Application version label")
+    app_version: str = Field(default="1.0.2", description="Application version label")
     public_repo: str = Field(
         default="necrul/Mendarr",
         description="Public GitHub repo slug or URL used for update checks",

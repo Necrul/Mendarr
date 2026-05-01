@@ -7,8 +7,8 @@ def test_update_status_marks_current_release(monkeypatch):
         "_fetch_latest_release",
         lambda repo: _async_result(
                 {
-                    "latest_version": "v1.0.1",
-                    "release_url": f"https://github.com/{repo}/releases/tag/v1.0.1",
+                    "latest_version": "v1.0.2",
+                    "release_url": f"https://github.com/{repo}/releases/tag/v1.0.2",
                     "error": None,
                 }
             ),
@@ -19,7 +19,7 @@ def test_update_status_marks_current_release(monkeypatch):
 
     status = _run(update_service.get_update_status())
 
-    assert status["current_version"] == "v1.0.1"
+    assert status["current_version"] == "v1.0.2"
     assert status["update_available"] is False
     assert status["status"] == "current"
 

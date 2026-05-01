@@ -91,6 +91,60 @@ async def load_root_pairs(session: AsyncSession) -> dict[str, list[tuple[str, st
     return out
 
 
+async def _match_tv_path_via_parse_candidates(
+    file_path: str,
+    client: SonarrClient,
+    *,
+    pairs: list[tuple[str, str]] | None = None,
+    title_hint: str | None = None,
+    season_hint: int | None = None,
+    episode_hint: int | None = None,
+) -> MatchOutcome | None:
+    path = Path(file_path)
+    for candidate in _manager_parse_candidates(path, pairs):
+        parsed = await client.parse_path(candidate)
+        episode = (parsed.get("episodes") or [None])[0]
+        if not episode or episode.get("id") is None:
+            continue
+        series = parsed.get("series") or {}
+        return MatchOutcome(
+            ManagerKind.SONARR,
+            sonarr_episode_entity_id(episode["id"]),
+            series.get("title") or title_hint,
+            episode.get("seasonNumber", season_hint),
+            episode.get("episodeNumber", episode_hint),
+            None,
+            "high",
+        )
+    return None
+
+
+async def _match_movie_path_via_parse_candidates(
+    file_path: str,
+    client: RadarrClient,
+    *,
+    pairs: list[tuple[str, str]] | None = None,
+    title_hint: str | None = None,
+    year_hint: int | None = None,
+) -> MatchOutcome | None:
+    path = Path(file_path)
+    for candidate in _manager_parse_candidates(path, pairs):
+        parsed = await client.parse_path(candidate)
+        movie = parsed.get("movie") or {}
+        if movie.get("id") is None:
+            continue
+        return MatchOutcome(
+            ManagerKind.RADARR,
+            str(movie["id"]),
+            movie.get("title") or title_hint,
+            None,
+            None,
+            movie.get("year") or year_hint,
+            "medium",
+        )
+    return None
+
+
 async def match_tv_path(
     session: AsyncSession,
     file_path: str,
@@ -105,6 +159,16 @@ async def match_tv_path(
     path = Path(file_path)
     tv = parse_tv_from_path(path)
     client = client or SonarrClient(sonarr_url, sonarr_key)
+    parsed_match = await _match_tv_path_via_parse_candidates(
+        file_path,
+        client,
+        pairs=pairs,
+        title_hint=tv.show_hint,
+        season_hint=tv.season,
+        episode_hint=tv.episode,
+    )
+    if parsed_match is not None:
+        return parsed_match
     series_list = series_list if series_list is not None else await client.all_series()
     series, score = sonarr_series_match_score(tv.show_hint, series_list)
     episode_id = None
@@ -165,6 +229,15 @@ async def match_movie_path(
     path = Path(file_path)
     mv = parse_movie_from_path(path)
     client = client or RadarrClient(radarr_url, radarr_key)
+    parsed_match = await _match_movie_path_via_parse_candidates(
+        file_path,
+        client,
+        pairs=pairs,
+        title_hint=mv.title_hint,
+        year_hint=mv.year,
+    )
+    if parsed_match is not None:
+        return parsed_match
     movies = movies if movies is not None else await client.all_movies()
     movie, score = radarr_movie_match_score(mv.title_hint, mv.year, movies)
     if movie:
@@ -179,22 +252,6 @@ async def match_movie_path(
             movie.get("year") or mv.year,
             conf,
         )
-    try:
-        for candidate in _manager_parse_candidates(path, pairs):
-            parsed = await client.parse_path(candidate)
-            m = parsed.get("movie") or {}
-            if m.get("id"):
-                return MatchOutcome(
-                    ManagerKind.RADARR,
-                    str(m["id"]),
-                    m.get("title"),
-                    None,
-                    None,
-                    m.get("year"),
-                    "medium",
-                )
-    except Exception:
-        pass
     return MatchOutcome(
         ManagerKind.NONE,
         None,
@@ -214,7 +271,12 @@ def infer_media_kind_from_roots(file_path: str, pairs_tv: list[tuple[str, str]],
     return MediaKind.UNKNOWN
 
 
-async def relink_finding(session: AsyncSession, finding: Finding) -> MatchOutcome:
+async def relink_finding(
+    session: AsyncSession,
+    finding: Finding,
+    *,
+    allow_library_lookup: bool = True,
+) -> MatchOutcome:
     pairs = await load_root_pairs(session)
 
     preferred = finding.manager_kind or ""
@@ -236,22 +298,55 @@ async def relink_finding(session: AsyncSession, finding: Finding) -> MatchOutcom
             continue
 
         if kind == "sonarr":
+            client = SonarrClient(integration.base_url, api_key)
+            if not allow_library_lookup:
+                try:
+                    outcome = await _match_tv_path_via_parse_candidates(
+                        finding.file_path,
+                        client,
+                        pairs=pairs.get("sonarr", []),
+                        title_hint=finding.title,
+                        season_hint=finding.season_number,
+                        episode_hint=finding.episode_number,
+                    )
+                except Exception:
+                    outcome = None
+                if outcome and outcome.manager_entity_id:
+                    return outcome
+                continue
             outcome = await match_tv_path(
                 session,
                 finding.file_path,
                 integration.base_url,
                 api_key,
                 pairs=pairs.get("sonarr", []),
+                client=client,
             )
             if outcome.manager_kind == ManagerKind.SONARR and outcome.manager_entity_id:
                 return outcome
         else:
+            client = RadarrClient(integration.base_url, api_key)
+            if not allow_library_lookup:
+                try:
+                    outcome = await _match_movie_path_via_parse_candidates(
+                        finding.file_path,
+                        client,
+                        pairs=pairs.get("radarr", []),
+                        title_hint=finding.title,
+                        year_hint=finding.year,
+                    )
+                except Exception:
+                    outcome = None
+                if outcome and outcome.manager_entity_id:
+                    return outcome
+                continue
             outcome = await match_movie_path(
                 session,
                 finding.file_path,
                 integration.base_url,
                 api_key,
                 pairs=pairs.get("radarr", []),
+                client=client,
             )
             if outcome.manager_kind == ManagerKind.RADARR and outcome.manager_entity_id:
                 return outcome

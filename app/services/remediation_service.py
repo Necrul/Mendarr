@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import httpx
 from pathlib import Path
 
 from sqlalchemy import select
@@ -58,10 +59,91 @@ def _payload_error_message(payload: object) -> str:
 
 
 def _exception_message(exc: Exception) -> str:
+    if isinstance(exc, httpx.ReadTimeout):
+        return "Manager request timed out"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "Connection to the manager timed out"
+    if isinstance(exc, httpx.ConnectError):
+        return "Could not connect to the manager"
     text = str(exc).strip()
     if text:
         return text[:2000]
     return exc.__class__.__name__[:2000]
+
+
+def _has_manager_link(finding: Finding) -> bool:
+    return bool(
+        finding.manager_entity_id
+        and finding.manager_kind in {ManagerKind.SONARR.value, ManagerKind.RADARR.value}
+    )
+
+
+async def _apply_relinked_finding(
+    session: AsyncSession,
+    finding: Finding,
+    relinked: MatchOutcome,
+    *,
+    actor: str | None,
+) -> bool:
+    if relinked.manager_kind == ManagerKind.NONE or not relinked.manager_entity_id:
+        return False
+    link_changed = (
+        finding.manager_kind != relinked.manager_kind.value
+        or finding.manager_entity_id != relinked.manager_entity_id
+        or finding.title != (relinked.title or finding.title)
+        or finding.season_number != relinked.season_number
+        or finding.episode_number != relinked.episode_number
+        or finding.year != relinked.year
+    )
+    finding.manager_kind = relinked.manager_kind.value
+    finding.manager_entity_id = relinked.manager_entity_id
+    finding.title = relinked.title or finding.title
+    finding.season_number = relinked.season_number
+    finding.episode_number = relinked.episode_number
+    finding.year = relinked.year
+    if link_changed:
+        await log_event(
+            session,
+            event_type="finding_updated",
+            entity_type="finding",
+            entity_id=str(finding.id),
+            message=f"Linked finding to {relinked.manager_kind.value}",
+            actor=actor,
+        )
+        await session.flush()
+    return link_changed
+
+
+async def _refresh_finding_link(
+    session: AsyncSession,
+    finding: Finding,
+    *,
+    actor: str | None,
+    allow_library_lookup: bool,
+) -> bool:
+    relinked = await relink_finding(session, finding, allow_library_lookup=allow_library_lookup)
+    return await _apply_relinked_finding(session, finding, relinked, actor=actor)
+
+
+async def _retry_with_refreshed_link(
+    session: AsyncSession,
+    finding: Finding,
+    operation,
+    *,
+    actor: str | None,
+    allow_library_lookup: bool = False,
+):
+    try:
+        return await operation()
+    except Exception:
+        if not await _refresh_finding_link(
+            session,
+            finding,
+            actor=actor,
+            allow_library_lookup=allow_library_lookup,
+        ):
+            raise
+        return await operation()
 
 
 async def _execute_sonarr_delete_search(
@@ -137,34 +219,14 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
     action = RemediationAction(job.action_type)
 
     try:
-        should_refresh_link = finding.media_kind in {MediaKind.TV.value, MediaKind.MOVIE.value}
-        if should_refresh_link:
-            relinked = await relink_finding(session, finding)
-            if relinked.manager_kind != ManagerKind.NONE and relinked.manager_entity_id:
-                link_changed = (
-                    finding.manager_kind != relinked.manager_kind.value
-                    or finding.manager_entity_id != relinked.manager_entity_id
-                    or finding.title != (relinked.title or finding.title)
-                    or finding.season_number != relinked.season_number
-                    or finding.episode_number != relinked.episode_number
-                    or finding.year != relinked.year
-                )
-                finding.manager_kind = relinked.manager_kind.value
-                finding.manager_entity_id = relinked.manager_entity_id
-                finding.title = relinked.title or finding.title
-                finding.season_number = relinked.season_number
-                finding.episode_number = relinked.episode_number
-                finding.year = relinked.year
-                if link_changed:
-                    await log_event(
-                        session,
-                        event_type="finding_updated",
-                        entity_type="finding",
-                        entity_id=str(finding.id),
-                        message=f"Linked finding to {relinked.manager_kind.value}",
-                        actor=actor,
-                    )
-                    await session.flush()
+        should_refresh_supported_finding = finding.media_kind in {MediaKind.TV.value, MediaKind.MOVIE.value}
+        if should_refresh_supported_finding:
+            await _refresh_finding_link(
+                session,
+                finding,
+                actor=actor,
+                allow_library_lookup=not _has_manager_link(finding),
+            )
 
         if finding.manager_kind == ManagerKind.SONARR.value:
             sonarr = await get_integration(session, IntegrationKind.SONARR)
@@ -179,21 +241,36 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
             if entity_value is None:
                 raise RuntimeError("Invalid Sonarr link on finding")
             if action == RemediationAction.RESCAN_ONLY:
-                sid = None
-                if entity_kind == "episode":
-                    try:
-                        ep = await client.get_episode_by_id(entity_value)
-                        sid = ep.get("seriesId")
-                    except Exception:
-                        sid = entity_value
-                else:
-                    sid = entity_value
+                async def _load_series_id() -> int:
+                    current_kind, current_value = parse_sonarr_entity_id(finding.manager_entity_id)
+                    if current_value is None:
+                        raise RuntimeError("Invalid Sonarr link on finding")
+                    if current_kind != "episode":
+                        return int(current_value)
+                    episode = await client.get_episode_by_id(current_value)
+                    series_id = episode.get("seriesId")
+                    if series_id is None:
+                        raise RuntimeError("Sonarr episode is missing a series id")
+                    return int(series_id)
+
+                sid = await _retry_with_refreshed_link(
+                    session,
+                    finding,
+                    _load_series_id,
+                    actor=actor,
+                )
                 cmd = await client.rescan_series(int(sid))
                 await _record_attempt(session, job, "RescanSeries", cmd)
                 if _payload_has_error(cmd):
                     raise RuntimeError(_payload_error_message(cmd))
             elif action == RemediationAction.DELETE_SEARCH_REPLACEMENT:
-                for step_name, payload in await _execute_sonarr_delete_search(session, client, finding):
+                steps = await _retry_with_refreshed_link(
+                    session,
+                    finding,
+                    lambda: _execute_sonarr_delete_search(session, client, finding),
+                    actor=actor,
+                )
+                for step_name, payload in steps:
                     await _record_attempt(session, job, step_name, payload)
                     if _payload_has_error(payload):
                         raise RuntimeError(_payload_error_message(payload))
@@ -201,13 +278,30 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
                 if entity_kind == "episode":
                     cutoff_unmet = await client.get_cutoff_unmet_episode(entity_value)
                     if cutoff_unmet is None:
-                        raise RuntimeError(
-                            "Sonarr reports cutoff already met for this episode; replacement search will not force an upgrade"
-                        )
-                    cmd = await client.episode_search([entity_value])
-                    await _record_attempt(session, job, "EpisodeSearch", cmd)
-                    if _payload_has_error(cmd):
-                        raise RuntimeError(_payload_error_message(cmd))
+                        if await _refresh_finding_link(
+                            session,
+                            finding,
+                            actor=actor,
+                            allow_library_lookup=False,
+                        ):
+                            entity_kind, entity_value = parse_sonarr_entity_id(finding.manager_entity_id)
+                            if entity_kind == "episode" and entity_value is not None:
+                                cutoff_unmet = await client.get_cutoff_unmet_episode(entity_value)
+                            elif entity_kind == "series" and entity_value is not None:
+                                cmd = await client.series_search(entity_value)
+                                await _record_attempt(session, job, "SeriesSearch", cmd)
+                                if _payload_has_error(cmd):
+                                    raise RuntimeError(_payload_error_message(cmd))
+                                cutoff_unmet = {"series_relinked": True}
+                        if cutoff_unmet is None:
+                            raise RuntimeError(
+                                "Sonarr reports cutoff already met for this episode; replacement search will not force an upgrade"
+                            )
+                    if entity_kind == "episode":
+                        cmd = await client.episode_search([entity_value])
+                        await _record_attempt(session, job, "EpisodeSearch", cmd)
+                        if _payload_has_error(cmd):
+                            raise RuntimeError(_payload_error_message(cmd))
                 elif entity_kind == "series":
                     cmd = await client.series_search(entity_value)
                     await _record_attempt(session, job, "SeriesSearch", cmd)
@@ -230,7 +324,13 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
                 if _payload_has_error(cmd):
                     raise RuntimeError(_payload_error_message(cmd))
             elif action == RemediationAction.DELETE_SEARCH_REPLACEMENT:
-                for step_name, payload in await _execute_radarr_delete_search(session, client, finding):
+                steps = await _retry_with_refreshed_link(
+                    session,
+                    finding,
+                    lambda: _execute_radarr_delete_search(session, client, finding),
+                    actor=actor,
+                )
+                for step_name, payload in steps:
                     await _record_attempt(session, job, step_name, payload)
                     if _payload_has_error(payload):
                         raise RuntimeError(_payload_error_message(payload))
