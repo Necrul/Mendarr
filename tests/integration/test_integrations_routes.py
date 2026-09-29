@@ -113,7 +113,7 @@ def test_add_custom_library_does_not_require_manager_path():
     async def _assert_and_cleanup():
         async with SessionLocal() as session:
             row = (
-                await session.execute(select(LibraryRoot).where(LibraryRoot.local_root_path == str(custom_root)))
+                await session.execute(select(LibraryRoot).where(LibraryRoot.local_root_path == str(custom_root.resolve())))
             ).scalar_one()
             assert row.manager_root_path == ""
             await session.execute(delete(LibraryRoot).where(LibraryRoot.id == row.id))

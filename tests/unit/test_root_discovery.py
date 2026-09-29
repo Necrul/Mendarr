@@ -5,7 +5,7 @@ import pytest
 from app.config import get_settings
 from app.crypto import encrypt_secret
 from app.persistence.models import IntegrationConfig, LibraryRoot
-from app.services.root_discovery_service import discover_root_candidates, resolve_local_scan_path
+from app.services.root_discovery_service import _candidate_from_path_mappings, discover_root_candidates, resolve_local_scan_path
 
 
 class _StubSonarrClient:
@@ -78,6 +78,7 @@ def test_resolve_local_scan_path_uses_configured_mapping(monkeypatch, tmp_path: 
     monkeypatch.setenv("MENDARR_PATH_MAPPINGS", f"/sonarr=>{mounted_root.as_posix()}")
     get_settings.cache_clear()
 
+    assert _candidate_from_path_mappings("/sonarr/TV Shows") == mounted_tv.as_posix()
     resolved, exists = resolve_local_scan_path("/sonarr/TV Shows")
 
     assert exists is True

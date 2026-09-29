@@ -84,6 +84,7 @@ def _build_candidate_path(target_root: str, suffix: str) -> Path:
 
 
 def _candidate_from_path_mappings(path_value: str) -> str | None:
+    original = path_value.strip().replace("\\", "/").rstrip("/")
     normalized = _normalize_compare_path(path_value)
     if not normalized:
         return None
@@ -95,7 +96,9 @@ def _candidate_from_path_mappings(path_value: str) -> str | None:
         if normalized == normalized_source:
             suffix = ""
         elif normalized.startswith(normalized_source + "/"):
-            suffix = normalized[len(normalized_source) :].lstrip("/")
+            # Compare prefixes without case, but preserve the actual directory
+            # spelling when constructing paths on case-sensitive filesystems.
+            suffix = original[len(source.strip().replace("\\", "/").rstrip("/")) :].lstrip("/")
         else:
             continue
         return str(_build_candidate_path(target, suffix)).replace("\\", "/")
