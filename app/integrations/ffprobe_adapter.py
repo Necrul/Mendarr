@@ -12,6 +12,10 @@ from app.logging import get_logger
 log = get_logger(__name__)
 
 
+class ProbeUnavailableError(RuntimeError):
+    """The probe tool cannot run; this says nothing about the media's health."""
+
+
 def _parse_streams(data: dict[str, Any]) -> ProbeResult:
     streams = data.get("streams") or []
     video = None
@@ -52,11 +56,11 @@ def probe_sync(path: str) -> ProbeResult:
     s = get_settings()
     cmd = [s.ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except subprocess.TimeoutExpired:
         return ProbeResult(False, None, None, None, None, [], None, "ffprobe timeout")
-    except FileNotFoundError:
-        return ProbeResult(False, None, None, None, None, [], None, f"ffprobe not found: {s.ffprobe_path}")
+    except OSError as exc:
+        raise ProbeUnavailableError(f"Cannot run ffprobe at {s.ffprobe_path}: {exc}") from exc
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
         return ProbeResult(False, None, None, None, None, [], None, err[:500])

@@ -20,6 +20,8 @@ from app.services.integration_service import get_integration, reveal_integration
 from app.services.match_service import parse_sonarr_entity_id, relink_finding
 from app.services.match_service import MatchOutcome
 from app.domain.scoring import score_finding
+from app.domain.matching import manager_path_to_local
+from app.services.match_service import load_root_pairs
 from app.services.rule_service import extras_tuple_from_settings, get_or_create_rule_settings
 from app.services.scan_service import upsert_finding
 
@@ -150,6 +152,7 @@ async def _execute_sonarr_delete_search(
     session: AsyncSession,
     client: SonarrClient,
     finding: Finding,
+    job: RemediationJob,
 ) -> list[tuple[str, dict]]:
     eid = finding.manager_entity_id
     if not eid:
@@ -163,18 +166,22 @@ async def _execute_sonarr_delete_search(
     if not episode_file_id:
         raise RuntimeError("Sonarr does not have a current episode file to delete")
 
+    episode_file = await client.get_episode_file(int(episode_file_id))
+    await _validate_delete_target(session, finding, episode_file, "sonarr")
     delete_result = await client.delete_episode_file(int(episode_file_id))
+    await _record_attempt(session, job, "DeleteEpisodeFile", delete_result)
     if _payload_has_error(delete_result):
-        return [("DeleteEpisodeFile", delete_result)]
+        raise RuntimeError(_payload_error_message(delete_result))
 
     search_result = await client.episode_search([entity_value])
-    return [("DeleteEpisodeFile", delete_result), ("EpisodeSearch", search_result)]
+    return [("EpisodeSearch", search_result)]
 
 
 async def _execute_radarr_delete_search(
     session: AsyncSession,
     client: RadarrClient,
     finding: Finding,
+    job: RemediationJob,
 ) -> list[tuple[str, dict]]:
     mid = finding.manager_entity_id
     if not mid or not str(mid).isdigit():
@@ -186,22 +193,49 @@ async def _execute_radarr_delete_search(
     if not movie_file_id:
         raise RuntimeError("Radarr does not have a current movie file to delete")
 
+    if not movie_file.get("path") or movie_file.get("size") is None:
+        movie_file = await client.get_movie_file(int(movie_file_id))
+    await _validate_delete_target(session, finding, movie_file, "radarr")
     delete_result = await client.delete_movie_file(int(movie_file_id))
+    await _record_attempt(session, job, "DeleteMovieFile", delete_result)
     if _payload_has_error(delete_result):
-        return [("DeleteMovieFile", delete_result)]
+        raise RuntimeError(_payload_error_message(delete_result))
 
     search_result = await client.movies_search([int(mid)])
-    return [("DeleteMovieFile", delete_result), ("MoviesSearch", search_result)]
+    return [("MoviesSearch", search_result)]
 
 
-async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None = "worker") -> None:
+async def _validate_delete_target(
+    session: AsyncSession, finding: Finding, manager_file: dict, kind: str,
+) -> None:
+    """Refuse deletion if the manager now owns a different file than we scanned."""
+    current_path = manager_file.get("path")
+    if not current_path:
+        raise RuntimeError("Cannot confirm the manager's current file path; run a verify scan before deleting")
+    pairs = (await load_root_pairs(session))[kind]
+    translated = manager_path_to_local(current_path, pairs)
+    local_path = Path(translated or current_path).resolve()
+    if local_path != Path(finding.file_path).resolve():
+        raise RuntimeError("The manager's current file differs from this finding; run a verify scan before deleting")
+    try:
+        current_size = int(manager_file.get("size"))
+    except (TypeError, ValueError):
+        current_size = None
+    if current_size != finding.file_size_bytes:
+        raise RuntimeError("The manager's current file size changed or is unknown; run a verify scan before deleting")
+
+
+async def execute_job(
+    session: AsyncSession, job_id: int, *, actor: str | None = "worker", claimed: bool = False,
+) -> None:
     r = await session.execute(
         select(RemediationJob)
         .options(selectinload(RemediationJob.finding))
         .where(RemediationJob.id == job_id)
     )
     job = r.scalar_one_or_none()
-    if not job or job.status != JobStatus.QUEUED.value:
+    expected_status = JobStatus.RUNNING.value if claimed else JobStatus.QUEUED.value
+    if not job or job.status != expected_status:
         return
 
     finding = job.finding
@@ -211,14 +245,22 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
         job.completed_at = dt.datetime.now(dt.UTC)
         return
 
-    job.status = JobStatus.RUNNING.value
-    job.started_at = dt.datetime.now(dt.UTC)
-    job.attempt_count += 1
+    if finding.ignored or finding.status in {"ignored", "resolved"}:
+        job.status = JobStatus.CANCELLED.value
+        job.completed_at = dt.datetime.now(dt.UTC)
+        job.last_error = "Finding was resolved or ignored before this job ran"
+        await log_event(session, event_type="job_cancelled", entity_type="remediation_job",
+                        entity_id=str(job.id), message=job.last_error, actor=actor)
+        return
+
+    if not claimed:
+        job.status = JobStatus.RUNNING.value
+        job.started_at = dt.datetime.now(dt.UTC)
+        job.attempt_count += 1
     await session.flush()
 
-    action = RemediationAction(job.action_type)
-
     try:
+        action = RemediationAction(job.action_type)
         should_refresh_supported_finding = finding.media_kind in {MediaKind.TV.value, MediaKind.MOVIE.value}
         if should_refresh_supported_finding:
             await _refresh_finding_link(
@@ -264,12 +306,7 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
                 if _payload_has_error(cmd):
                     raise RuntimeError(_payload_error_message(cmd))
             elif action == RemediationAction.DELETE_SEARCH_REPLACEMENT:
-                steps = await _retry_with_refreshed_link(
-                    session,
-                    finding,
-                    lambda: _execute_sonarr_delete_search(session, client, finding),
-                    actor=actor,
-                )
+                steps = await _execute_sonarr_delete_search(session, client, finding, job)
                 for step_name, payload in steps:
                     await _record_attempt(session, job, step_name, payload)
                     if _payload_has_error(payload):
@@ -324,12 +361,7 @@ async def execute_job(session: AsyncSession, job_id: int, *, actor: str | None =
                 if _payload_has_error(cmd):
                     raise RuntimeError(_payload_error_message(cmd))
             elif action == RemediationAction.DELETE_SEARCH_REPLACEMENT:
-                steps = await _retry_with_refreshed_link(
-                    session,
-                    finding,
-                    lambda: _execute_radarr_delete_search(session, client, finding),
-                    actor=actor,
-                )
+                steps = await _execute_radarr_delete_search(session, client, finding, job)
                 for step_name, payload in steps:
                     await _record_attempt(session, job, step_name, payload)
                     if _payload_has_error(payload):

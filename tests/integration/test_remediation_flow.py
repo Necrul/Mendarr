@@ -573,6 +573,9 @@ async def test_remediation_delete_search_replacement_uses_manager_delete_then_se
             calls.append(("get_episode_by_id", episode_id))
             return {"id": episode_id, "seriesId": 262554, "episodeFileId": 999}
 
+        async def get_episode_file(self, episode_file_id: int):
+            return {"id": episode_file_id, "path": str(media_file), "size": media_file.stat().st_size}
+
         async def delete_episode_file(self, episode_file_id: int):
             calls.append(("delete_episode_file", episode_file_id))
             return {"status": 200}

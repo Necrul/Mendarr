@@ -29,6 +29,7 @@ from app.security import COOKIE_NAME, verify_session_token
 from app.version import get_version_label
 from app.rate_limit import limiter
 from app.services.remediation_service import execute_job
+from app.services.job_service import claim_next_job, recover_abandoned_jobs
 from app.services.integration_service import migrate_legacy_integration_secrets
 from app.services.scan_service import recover_abandoned_scans, stop_background_scan
 from app.services.scan_service import start_next_queued_verify_scan
@@ -48,30 +49,25 @@ _SECURITY_HEADERS = {
 
 
 async def _job_worker_loop(stop: asyncio.Event) -> None:
-    from sqlalchemy import select
-
-    from app.domain.enums import JobStatus
-    from app.persistence.models import RemediationJob
-
     while not stop.is_set():
         jid = None
         try:
             async with SessionLocal() as session:
-                r = await session.execute(
-                    select(RemediationJob)
-                    .where(RemediationJob.status == JobStatus.QUEUED.value)
-                    .order_by(RemediationJob.id)
-                    .limit(1)
-                )
-                job = r.scalar_one_or_none()
-                if job:
-                    jid = job.id
+                jid = await claim_next_job(session)
+                await session.commit()
             if jid is not None:
                 async with SessionLocal() as session:
                     async with session.begin():
-                        await execute_job(session, jid, actor="worker")
+                        await execute_job(session, jid, actor="worker", claimed=True)
         except Exception:
             log.exception("job worker tick failed")
+            if jid is not None:
+                try:
+                    async with SessionLocal() as session:
+                        await recover_abandoned_jobs(session, job_id=jid)
+                        await session.commit()
+                except Exception:
+                    log.exception("Could not persist interrupted job %s; startup recovery will retry", jid)
         try:
             await asyncio.wait_for(stop.wait(), timeout=4.0)
         except TimeoutError:
@@ -87,6 +83,9 @@ async def lifespan(app: FastAPI):
     async with SessionLocal() as s:
         async with s.begin():
             await ensure_default_admin(s)
+            recovered_jobs = await recover_abandoned_jobs(s)
+            if recovered_jobs:
+                log.warning("Marked %s interrupted repair job(s) for review", recovered_jobs)
             migrated = await migrate_legacy_integration_secrets(s)
             if migrated:
                 log.info("Migrated %s legacy integration secret(s) to encrypted storage", migrated)

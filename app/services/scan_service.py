@@ -26,6 +26,7 @@ from app.domain.matching import (
     parse_tv_from_path,
 )
 from app.domain.scoring import VIDEO_EXTENSIONS, score_finding
+from app.domain.value_objects import ScoreResult
 from app.integrations.ffprobe_adapter import _parse_streams, probe_file
 from app.integrations.radarr_client import RadarrClient
 from app.integrations.sonarr_client import SonarrClient
@@ -105,9 +106,9 @@ def iter_video_files(root: Path):
             if real_child in seen_dirs:
                 continue
             pruned_dirnames.append(dirname)
-        dirnames[:] = pruned_dirnames
+        dirnames[:] = sorted(pruned_dirnames)
 
-        for fn in filenames:
+        for fn in sorted(filenames):
             p = Path(dirpath) / fn
             if p.suffix.lower() in VIDEO_EXTENSIONS:
                 yield p
@@ -344,7 +345,7 @@ async def upsert_finding(
     actor: str | None = None,
     ignored: bool = False,
     action_override: str | None = None,
-) -> None:
+) -> Finding:
     r = await session.execute(select(Finding).where(Finding.file_path == abs_path))
     row = r.scalar_one_or_none()
     now = dt.datetime.now(dt.UTC)
@@ -359,6 +360,7 @@ async def upsert_finding(
         mgr_entity = mo.manager_entity_id
 
     duration, res, cv, ca = _probe_metadata(ffprobe_json)
+    ignored = ignored or scored.proposed_action.value == "ignore"
     try:
         fsize = path_obj.stat().st_size if path_obj.exists() else 0
     except OSError:
@@ -367,12 +369,14 @@ async def upsert_finding(
     if row:
         row.file_name = path_obj.name
         row.media_kind = mkind.value
-        row.manager_kind = mgr_kind
-        row.manager_entity_id = mgr_entity
-        row.title = title
-        row.season_number = season
-        row.episode_number = episode
-        row.year = year
+        # An unavailable manager is not evidence that an existing link is wrong.
+        if mgr_entity:
+            row.manager_kind = mgr_kind
+            row.manager_entity_id = mgr_entity
+            row.title = title
+            row.season_number = season
+            row.episode_number = episode
+            row.year = year
         row.file_size_bytes = fsize
         row.duration_seconds = duration
         row.resolution = res
@@ -381,6 +385,7 @@ async def upsert_finding(
         row.suspicion_score = scored.score
         row.confidence = scored.confidence.value
         row.proposed_action = action_override or scored.proposed_action.value
+        ignored = ignored or row.ignored
         row.ignored = ignored
         if ignored:
             row.status = FindingStatus.IGNORED.value
@@ -411,7 +416,7 @@ async def upsert_finding(
             metadata={"score": scored.score, "ignored": ignored},
             actor=actor,
         )
-        return
+        return row
 
     row = Finding(
         file_path=abs_path,
@@ -459,6 +464,27 @@ async def upsert_finding(
         metadata={"score": scored.score, "ignored": ignored},
         actor=actor,
     )
+    return row
+
+
+async def _refresh_healthy_finding(
+    session: AsyncSession,
+    run: ScanRun,
+    abs_path: str,
+    path_obj: Path,
+    mkind: MediaKind,
+    scored: ScoreResult,
+    probe_raw: dict | None,
+    *,
+    actor: str | None,
+) -> None:
+    """Refresh known evidence without creating rows for every healthy library file."""
+    existing = (await session.execute(select(Finding).where(Finding.file_path == abs_path))).scalar_one_or_none()
+    if existing is None:
+        return
+    row = await upsert_finding(session, run, abs_path, path_obj, mkind, None, scored, probe_raw, actor=actor)
+    if not row.ignored:
+        await _mark_finding_resolved(session, row, run, actor=actor, message=f"Verified healthy: {path_obj.name}")
 
 
 async def _commit_scan_progress(session: AsyncSession, run_id: int) -> ScanRun:
@@ -515,6 +541,7 @@ async def _perform_scan(
     sonarr_series_cache = None
     radarr_movies_cache = None
     run_id = run.id
+    known_paths = set((await session.execute(select(Finding.file_path))).scalars())
 
     async def interrupt_scan(message: str) -> ScanRun:
         nonlocal run
@@ -524,7 +551,7 @@ async def _perform_scan(
         run.notes = merge_scan_notes(
             run.notes,
             phase="interrupted",
-            resume_after_file=notes.get("current_file"),
+            resume_after_file=notes.get("resume_after_file"),
             current_file=None,
             current_library=None,
             error=message,
@@ -592,10 +619,17 @@ async def _perform_scan(
             total_files=progress_context["total_files"],
             findings=run.suspicious_found,
         )
-        if commit_progress and progress_state[0] >= PROGRESS_COMMIT_INTERVAL:
-            run = await _commit_scan_progress(session, run_id)
-            progress_state[0] = 0
         if scored.score < MIN_SCORE_TO_PERSIST:
+            if abs_path in known_paths:
+                await _refresh_healthy_finding(
+                    session, run, abs_path, path_obj, mkind, scored,
+                    _compact_ffprobe_json(probe.raw if probe and probe.ok else None), actor=actor,
+                )
+            # Commit the checkpoint only after all effects of this file are saved.
+            update_run_notes(resume_after_file=abs_path)
+            if commit_progress and progress_state[0] >= PROGRESS_COMMIT_INTERVAL:
+                run = await _commit_scan_progress(session, run_id)
+                progress_state[0] = 0
             return
 
         mo = None
@@ -687,7 +721,7 @@ async def _perform_scan(
             findings=run.suspicious_found,
         )
         probe_raw = _compact_ffprobe_json(probe.raw if probe and probe.ok else None)
-        await upsert_finding(
+        finding_row = await upsert_finding(
             session,
             run,
             abs_path,
@@ -704,27 +738,24 @@ async def _perform_scan(
         resolved_action = action_override or scored.proposed_action.value
         if (
             rules.auto_remediation_enabled
-            and not ignored
+            and not finding_row.ignored
             and scored.confidence.value == "high"
             and has_mgr
             and resolved_action in {RemediationAction.RESCAN_ONLY.value, RemediationAction.SEARCH_REPLACEMENT.value}
         ):
-            finding_row = (
-                await session.execute(select(Finding).where(Finding.file_path == abs_path).limit(1))
-            ).scalar_one_or_none()
-            if finding_row:
-                await create_job(
-                    session,
-                    finding_id=finding_row.id,
-                    action=RemediationAction(resolved_action),
-                    requested_by="auto",
-                    actor=actor,
-                )
+            await create_job(
+                session,
+                finding_id=finding_row.id,
+                action=RemediationAction(resolved_action),
+                requested_by="auto",
+                actor=actor,
+            )
+        update_run_notes(resume_after_file=abs_path)
         if commit_progress:
             run = await _commit_scan_progress(session, run_id)
             progress_state[0] = 0
 
-    r = await session.execute(select(LibraryRoot).where(LibraryRoot.enabled.is_(True)))
+    r = await session.execute(select(LibraryRoot).where(LibraryRoot.enabled.is_(True)).order_by(LibraryRoot.id))
     lib_roots = list(r.scalars().all())
     root_specs = [(lr.local_root_path, lr.manager_kind) for lr in lib_roots]
     scanned_roots, skipped_roots, scannable_roots = _collect_scannable_roots(root_specs)
@@ -968,7 +999,6 @@ async def _verification_target_path(
         source_path = Path(finding.file_path)
         candidate_name = path_candidate.name
         candidate_suffix = path_candidate.suffix.lower()
-        candidate_dir_name = path_candidate.parent.name.casefold()
 
         parent_candidates: list[Path] = []
         if source_path.parent.exists():
@@ -1003,13 +1033,6 @@ async def _verification_target_path(
             except OSError:
                 continue
 
-        if source_path.parent.exists() and source_path.parent.name.casefold() == candidate_dir_name:
-            try:
-                for child in source_path.parent.iterdir():
-                    if child.is_file() and child.suffix.lower() == candidate_suffix and child.name != source_path.name:
-                        return str(child.resolve())
-            except OSError:
-                pass
         return None
 
     try:
@@ -1031,12 +1054,12 @@ async def _verification_target_path(
                 return visible
     except Exception as ex:
         log.debug("verify path resolution failed for finding %s: %s", finding.id, ex)
-    local_candidate = find_local_replacement_candidate()
-    if local_candidate:
-        return local_candidate
     source_path = Path(finding.file_path)
     if source_path.is_file():
         return str(source_path.resolve())
+    local_candidate = find_local_replacement_candidate()
+    if local_candidate:
+        return local_candidate
     return None
 
 
@@ -1048,9 +1071,12 @@ async def _mark_finding_resolved(
     actor: str | None,
     message: str,
 ) -> None:
+    already_resolved = finding.status == FindingStatus.RESOLVED.value
     finding.status = FindingStatus.RESOLVED.value
     finding.last_scanned_at = dt.datetime.now(dt.UTC)
     finding.last_scan_run_id = run.id
+    if already_resolved:
+        return
     await log_event(
         session,
         event_type="finding_resolved",
@@ -1084,7 +1110,7 @@ async def _scan_verify_target(
         st = path_obj.stat()
     except OSError as e:
         _log_stat_failure(abs_path, e, verify=True)
-        return {"persisted": False, "score": 0}
+        return {"skipped": True, "path": abs_path}
 
     size = st.st_size
     probe = await probe_file(abs_path)
@@ -1118,6 +1144,10 @@ async def _scan_verify_target(
     )
     run.files_seen += 1
     if scored.score < MIN_SCORE_TO_PERSIST:
+        await _refresh_healthy_finding(
+            session, run, abs_path, path_obj, mkind, scored,
+            _compact_ffprobe_json(probe.raw if probe and probe.ok else None), actor=actor,
+        )
         return {"persisted": False, "score": scored.score, "path": abs_path}
 
     mo = None
@@ -1321,7 +1351,14 @@ async def _perform_verify_scan(
             extras=extras,
             caches=caches,
         )
-        if not result.get("persisted"):
+        # Progress commits expunge ORM objects. Reattach the source before changing
+        # it, including when a different replacement path was checked.
+        source_finding = await session.get(Finding, finding_id)
+        if source_finding is None or result.get("skipped"):
+            skipped.append(finding_id)
+        elif source_finding.ignored:
+            pass
+        elif not result.get("persisted"):
             await _mark_finding_resolved(
                 session,
                 source_finding,

@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import delete, select
 
 from app.domain.value_objects import ProbeResult
@@ -17,6 +18,18 @@ from app.services.scan_service import (
     start_scan,
     start_verify_scan,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def finish_background_scans():
+    yield
+    # A completed database row can be visible before the task finishes handing
+    # off queued work. Let that cleanup finish before pytest closes this loop.
+    pending = [task for task in asyncio.all_tasks()
+               if task is not asyncio.current_task()
+               and getattr(task.get_coro(), "__name__", "") in {"_background_scan", "_background_verify_scan"}]
+    if pending:
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
 
 
 @pytest.mark.asyncio
@@ -1304,7 +1317,7 @@ async def test_verify_scan_skips_disappeared_target_without_warning(monkeypatch,
         assert run.files_seen == 0
         assert run.suspicious_found == 0
         assert finding is not None
-        assert finding.status == "resolved"
+        assert finding.status == "open"
 
     assert not [
         record

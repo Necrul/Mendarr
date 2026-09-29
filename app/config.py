@@ -70,7 +70,7 @@ class Settings(BaseSettings):
         default=False,
         description="Trust X-Forwarded-* headers from a known reverse proxy",
     )
-    app_version: str = Field(default="1.0.2", description="Application version label")
+    app_version: str = Field(default="1.0.3", description="Application version label")
     public_repo: str = Field(
         default="necrul/Mendarr",
         description="Public GitHub repo slug or URL used for update checks",

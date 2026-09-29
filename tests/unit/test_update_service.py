@@ -2,6 +2,7 @@ from app.services import update_service
 
 
 def test_update_status_marks_current_release(monkeypatch):
+    monkeypatch.setattr(update_service, "get_version_label", lambda: "v1.0.2")
     monkeypatch.setattr(
         update_service,
         "_fetch_latest_release",
@@ -25,6 +26,7 @@ def test_update_status_marks_current_release(monkeypatch):
 
 
 def test_update_status_marks_update_available(monkeypatch):
+    monkeypatch.setattr(update_service, "get_version_label", lambda: "v1.0.2")
     monkeypatch.setattr(
         update_service,
         "_fetch_latest_release",

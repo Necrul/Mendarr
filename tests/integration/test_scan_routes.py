@@ -4,10 +4,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 
 from app.main import app
 from app.persistence.db import SessionLocal
-from app.persistence.models import ScanRun
+from app.persistence.models import Finding, ScanRun
 from tests.conftest import extract_csrf_token
 
 
@@ -221,6 +222,7 @@ def test_latest_scan_status_prefers_running_scan_over_newer_queued_scan(monkeypa
 
     async def _seed():
         async with SessionLocal() as session:
+            await session.execute(update(Finding).values(last_scan_run_id=None))
             await session.execute(ScanRun.__table__.delete())
             session.add_all(
                 [

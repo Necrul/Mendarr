@@ -2,13 +2,43 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import JobStatus, RemediationAction
 from app.persistence.models import RemediationJob
 from app.services.audit_service import log_event
+
+
+async def claim_next_job(session: AsyncSession) -> int | None:
+    """Caller must commit the claim before performing any external side effects."""
+    next_id = (select(RemediationJob.id)
+               .where(RemediationJob.status == JobStatus.QUEUED.value)
+               .order_by(RemediationJob.id).limit(1).scalar_subquery())
+    result = await session.execute(
+        update(RemediationJob)
+        .where(RemediationJob.id == next_id, RemediationJob.status == JobStatus.QUEUED.value)
+        .values(status=JobStatus.RUNNING.value, started_at=dt.datetime.now(dt.UTC),
+                attempt_count=RemediationJob.attempt_count + 1)
+        .returning(RemediationJob.id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def recover_abandoned_jobs(session: AsyncSession, *, job_id: int | None = None) -> int:
+    """An interrupted manager request has an unknown outcome and must not replay."""
+    query = select(RemediationJob).where(RemediationJob.status == JobStatus.RUNNING.value)
+    if job_id is not None:
+        query = query.where(RemediationJob.id == job_id)
+    jobs = (await session.execute(query)).scalars().all()
+    for job in jobs:
+        job.status = JobStatus.FAILED.value
+        job.completed_at = dt.datetime.now(dt.UTC)
+        job.last_error = "Mendarr was interrupted during this job. Manager outcome is unknown; verify the finding before retrying."
+        await log_event(session, event_type="job_failed", entity_type="remediation_job",
+                        entity_id=str(job.id), message=job.last_error, actor="system")
+    return len(jobs)
 
 
 async def create_job(

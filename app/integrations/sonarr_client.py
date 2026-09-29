@@ -178,7 +178,7 @@ class SonarrClient:
             r = await c.get(f"{self.base_url}/api/v3/queue", headers=self._headers())
             r.raise_for_status()
             data = r.json()
-            return data.get("records") or data if isinstance(data, list) else []
+            return data if isinstance(data, list) else data.get("records") or []
 
     async def history(self, page_size: int = 20) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=self._timeout()) as c:

@@ -39,6 +39,20 @@ class _StubAsyncClient:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client_type", [SonarrClient, RadarrClient])
+@pytest.mark.parametrize("wrapped", [True, False])
+async def test_queue_retains_records(monkeypatch, client_type, wrapped):
+    records = [{"id": 123, "status": "downloading"}]
+
+    class QueueClient(_StubAsyncClient):
+        async def get(self, *args, **kwargs):
+            return _StubResponse({"records": records} if wrapped else records)
+
+    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: QueueClient([]))
+    assert await client_type("http://manager", "secret").queue() == records
+
+
+@pytest.mark.asyncio
 async def test_sonarr_episode_search_shapes_request(monkeypatch):
     calls = []
     monkeypatch.setattr(
